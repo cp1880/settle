@@ -1,0 +1,6 @@
+{
+  "name": "Isometric Settlers",
+  "description": "A data-driven 2D isometric colony economy strategy game featuring production chains, A* pathfinding with road costs, villager management, building construction, and depth-sorted rendering.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
