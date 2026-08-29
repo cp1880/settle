@@ -100,7 +100,7 @@ export class Unit {
 
     this.updateFacing(targetX, targetY);
 
-    if (dist <= moveSpeed) {
+    if (dist <= moveSpeed || dist === 0) {
       // Arrived at next waypoint
       this.data.x = targetX;
       this.data.y = targetY;

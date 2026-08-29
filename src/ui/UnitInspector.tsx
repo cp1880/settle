@@ -1,15 +1,41 @@
 import React from 'react';
 import { Unit } from '../core/Unit';
 import { JOBS } from '../content/jobs';
-import { Users, Shield, Heart, Activity, Package, X, Compass, Hammer, Axe, Pickaxe, Sparkles } from 'lucide-react';
+import {
+  Users,
+  Shield,
+  Heart,
+  Activity,
+  Package,
+  X,
+  Compass,
+  Hammer,
+  Axe,
+  Pickaxe,
+  Sparkles,
+  ChevronLeft,
+  ChevronRight,
+} from 'lucide-react';
 
 interface UnitInspectorProps {
   unit: Unit;
   onClose: () => void;
   onAssignJob?: (unitId: string, jobId: string | null) => void;
+  currentIndex?: number;
+  totalCount?: number;
+  onPrevUnit?: () => void;
+  onNextUnit?: () => void;
 }
 
-export const UnitInspector: React.FC<UnitInspectorProps> = ({ unit, onClose, onAssignJob }) => {
+export const UnitInspector: React.FC<UnitInspectorProps> = ({
+  unit,
+  onClose,
+  onAssignJob,
+  currentIndex,
+  totalCount,
+  onPrevUnit,
+  onNextUnit,
+}) => {
   const isSoldier = unit.data.type === 'soldier';
   const job = unit.data.jobId ? JOBS[unit.data.jobId] : undefined;
 
@@ -44,18 +70,48 @@ export const UnitInspector: React.FC<UnitInspectorProps> = ({ unit, onClose, onA
         <div className="flex items-center gap-2">
           {isSoldier ? <Shield className="w-4 h-4 text-sky-400" /> : <Users className="w-4 h-4 text-amber-400" />}
           <div>
-            <h3 className="font-serif font-bold text-sm text-neutral-100">{unit.data.name}</h3>
+            <div className="flex items-center gap-1.5">
+              <h3 className="font-serif font-bold text-sm text-neutral-100">{unit.data.name}</h3>
+              {currentIndex !== undefined && totalCount !== undefined && (
+                <span className="text-[10px] bg-neutral-800 border border-neutral-700/60 text-neutral-400 px-1.5 py-0.2 rounded font-mono">
+                  {currentIndex + 1}/{totalCount}
+                </span>
+              )}
+            </div>
             <p className="text-[10px] text-neutral-400">
               {isSoldier ? 'Colony Defender' : job?.name || 'Free Settler'}
             </p>
           </div>
         </div>
-        <button
-          onClick={onClose}
-          className="text-neutral-400 hover:text-white p-1 rounded-lg hover:bg-neutral-800 transition"
-        >
-          <X className="w-4 h-4" />
-        </button>
+
+        <div className="flex items-center gap-1">
+          {/* Previous / Next Unit Buttons */}
+          {onPrevUnit && onNextUnit && (
+            <div className="flex items-center bg-neutral-800/80 border border-neutral-700/60 rounded-lg p-0.5 mr-1">
+              <button
+                onClick={onPrevUnit}
+                title="Previous Villager (Left Arrow ←)"
+                className="text-neutral-400 hover:text-white p-1 rounded hover:bg-neutral-700 transition"
+              >
+                <ChevronLeft className="w-3.5 h-3.5" />
+              </button>
+              <button
+                onClick={onNextUnit}
+                title="Next Villager (Right Arrow →)"
+                className="text-neutral-400 hover:text-white p-1 rounded hover:bg-neutral-700 transition"
+              >
+                <ChevronRight className="w-3.5 h-3.5" />
+              </button>
+            </div>
+          )}
+          <button
+            onClick={onClose}
+            className="text-neutral-400 hover:text-white p-1 rounded-lg hover:bg-neutral-800 transition"
+            title="Close Inspector (Esc)"
+          >
+            <X className="w-4 h-4" />
+          </button>
+        </div>
       </div>
 
       {/* Role / Profession */}
@@ -133,10 +189,10 @@ export const UnitInspector: React.FC<UnitInspectorProps> = ({ unit, onClose, onA
       {/* Grid Coordinates */}
       <div className="flex items-center justify-between text-[10px] text-neutral-400 pt-1 border-t border-neutral-800/60">
         <span className="flex items-center gap-1">
-          <Compass className="w-3 h-3" /> Grid Position:
+          <Compass className="w-3 h-3" /> Grid: ({unit.gridX}, {unit.gridY})
         </span>
-        <span className="font-mono">
-          ({unit.gridX}, {unit.gridY})
+        <span className="text-[9.5px] text-neutral-400 font-medium">
+          Cycle: <span className="bg-neutral-800 px-1 py-0.5 rounded border border-neutral-700 text-neutral-300">←</span> <span className="bg-neutral-800 px-1 py-0.5 rounded border border-neutral-700 text-neutral-300">→</span>
         </span>
       </div>
     </aside>

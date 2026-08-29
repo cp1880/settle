@@ -10,6 +10,7 @@ import { Renderer } from './core/Renderer';
 import { SaveSystem } from './core/SaveSystem';
 import { globalAudio } from './core/AudioSystem';
 import { validateContent } from './core/ContentValidator';
+import { Unit } from './core/Unit';
 import { GameSpeed, BuildingInstance } from './types';
 import { getGridTileAtScreen, isoToScreen } from './iso';
 import { BUILDINGS, getBuilding } from './content/buildings';
@@ -155,7 +156,7 @@ export default function App() {
             const def = getBuilding(selectedDefId);
             const isValid =
               def !== undefined &&
-              world.grid.canPlaceBuilding(selectedGridTile.x, selectedGridTile.y, def.size.w, def.size.h) &&
+              world.grid.canPlaceBuilding(selectedGridTile.x, selectedGridTile.y, def.size.w, def.size.h, def.allowedTerrains) &&
               world.store.canAfford(def.cost);
 
             buildPreview = {
@@ -198,6 +199,78 @@ export default function App() {
     return () => window.removeEventListener('resize', handleResize);
   }, []);
 
+  // Camera Centering Helpers
+  const centerCameraOnUnit = useCallback((unit: Unit) => {
+    const iso = isoToScreen(unit.gridX, unit.gridY);
+    cameraRef.current.x = iso.x;
+    cameraRef.current.y = iso.y;
+  }, []);
+
+  const centerCameraOnBuilding = useCallback((bld: BuildingInstance) => {
+    const def = getBuilding(bld.defId);
+    const cx = bld.x + (def ? def.size.w / 2 : 1);
+    const cy = bld.y + (def ? def.size.h / 2 : 1);
+    const iso = isoToScreen(cx, cy);
+    cameraRef.current.x = iso.x;
+    cameraRef.current.y = iso.y;
+  }, []);
+
+  // Unit & Building Selection Cyclers
+  const handleCycleUnit = useCallback(
+    (direction: 1 | -1) => {
+      const world = worldRef.current;
+      if (!world || world.units.length === 0) return;
+      const units = world.units;
+      const currentIdx = units.findIndex((u) => u.id === selectedUnitId);
+      let nextIdx = 0;
+      if (currentIdx >= 0) {
+        nextIdx = (currentIdx + direction + units.length) % units.length;
+      }
+      const nextUnit = units[nextIdx];
+      if (nextUnit) {
+        setSelectedUnitId(nextUnit.id);
+        setSelectedBuilding(null);
+        centerCameraOnUnit(nextUnit);
+        globalAudio.play('click');
+      }
+    },
+    [selectedUnitId, centerCameraOnUnit]
+  );
+
+  const handleCycleBuilding = useCallback(
+    (direction: 1 | -1) => {
+      const world = worldRef.current;
+      if (!world || world.buildings.length === 0) return;
+      const allBuildings = world.buildings;
+
+      const isCurrentInfra =
+        selectedBuilding &&
+        (selectedBuilding.defId === 'road' || selectedBuilding.defId === 'bridge');
+
+      // Filter list depending on whether user was inspecting infrastructure or main buildings
+      const targetList = allBuildings.filter((b) =>
+        isCurrentInfra
+          ? b.defId === 'road' || b.defId === 'bridge'
+          : b.defId !== 'road' && b.defId !== 'bridge'
+      );
+
+      const listToUse = targetList.length > 0 ? targetList : allBuildings;
+      const currentIdx = listToUse.findIndex((b) => b.id === selectedBuilding?.id);
+      let nextIdx = 0;
+      if (currentIdx >= 0) {
+        nextIdx = (currentIdx + direction + listToUse.length) % listToUse.length;
+      }
+      const nextBld = listToUse[nextIdx];
+      if (nextBld) {
+        setSelectedBuilding(nextBld);
+        setSelectedUnitId(null);
+        centerCameraOnBuilding(nextBld);
+        globalAudio.play('click');
+      }
+    },
+    [selectedBuilding, centerCameraOnBuilding]
+  );
+
   // Keyboard Shortcuts
   useEffect(() => {
     const handleKeyDown = (e: KeyboardEvent) => {
@@ -207,10 +280,30 @@ export default function App() {
         cameraRef.current.y -= panSpeed;
       } else if (e.code === 'KeyS' || e.code === 'ArrowDown') {
         cameraRef.current.y += panSpeed;
-      } else if (e.code === 'KeyA' || e.code === 'ArrowLeft') {
+      } else if (e.code === 'KeyA') {
         cameraRef.current.x -= panSpeed;
-      } else if (e.code === 'KeyD' || e.code === 'ArrowRight') {
+      } else if (e.code === 'KeyD') {
         cameraRef.current.x += panSpeed;
+      } else if (e.code === 'ArrowLeft') {
+        if (selectedUnitId) {
+          e.preventDefault();
+          handleCycleUnit(-1);
+        } else if (selectedBuilding) {
+          e.preventDefault();
+          handleCycleBuilding(-1);
+        } else {
+          cameraRef.current.x -= panSpeed;
+        }
+      } else if (e.code === 'ArrowRight') {
+        if (selectedUnitId) {
+          e.preventDefault();
+          handleCycleUnit(1);
+        } else if (selectedBuilding) {
+          e.preventDefault();
+          handleCycleBuilding(1);
+        } else {
+          cameraRef.current.x += panSpeed;
+        }
       } else if (e.code === 'Space') {
         e.preventDefault();
         setGameSpeed((prev) => (prev === 0 ? 1 : 0));
@@ -237,7 +330,7 @@ export default function App() {
 
     window.addEventListener('keydown', handleKeyDown);
     return () => window.removeEventListener('keydown', handleKeyDown);
-  }, []);
+  }, [selectedUnitId, selectedBuilding, handleCycleUnit, handleCycleBuilding]);
 
   // Pointer & Touch Handlers
   const handlePointerDown = (e: React.PointerEvent<HTMLCanvasElement>) => {
@@ -323,8 +416,9 @@ export default function App() {
         }
       }
 
-      // Check unit near tile
-      const clickedUnit = world.units.find((u) => u.gridX === gx && u.gridY === gy);
+      // Check unit on or near tile
+      const clickedUnit = world.units.find((u) => Math.abs(u.gridX - gx) <= 0.9 && Math.abs(u.gridY - gy) <= 0.9) ||
+                          world.units.find((u) => u.gridX === gx && u.gridY === gy);
       if (clickedUnit) {
         setSelectedUnitId(clickedUnit.id);
         setSelectedBuilding(null);
@@ -415,6 +509,7 @@ export default function App() {
             setSelectedDefId(null);
             setRoadToolActive(false);
           }}
+          onCycleVillager={() => handleCycleUnit(1)}
         />
       )}
 
@@ -437,29 +532,45 @@ export default function App() {
       )}
 
       {/* Building Inspector Modal */}
-      {!isMainMenuOpen && selectedBuilding && (
-        <BuildingInspector
-          building={selectedBuilding}
-          onClose={() => setSelectedBuilding(null)}
-          onDemolish={(bld) => {
-            if (worldRef.current) {
-              worldRef.current.demolish(bld.x, bld.y);
-              setSelectedBuilding(null);
-            }
-          }}
-          onTrainSoldier={(bldId) => {
-            if (worldRef.current) {
-              worldRef.current.trainSoldierAtBarracks(bldId);
-            }
-          }}
-          currentInventory={hudInventory}
-        />
+      {!isMainMenuOpen && selectedBuilding && worldRef.current && (
+        (() => {
+          const isInfra = selectedBuilding.defId === 'road' || selectedBuilding.defId === 'bridge';
+          const targetList = worldRef.current.buildings.filter((b) =>
+            isInfra ? b.defId === 'road' || b.defId === 'bridge' : b.defId !== 'road' && b.defId !== 'bridge'
+          );
+          const list = targetList.length > 0 ? targetList : worldRef.current.buildings;
+          const bldIdx = list.findIndex((b) => b.id === selectedBuilding.id);
+          return (
+            <BuildingInspector
+              building={selectedBuilding}
+              onClose={() => setSelectedBuilding(null)}
+              onDemolish={(bld) => {
+                if (worldRef.current) {
+                  worldRef.current.demolish(bld.x, bld.y);
+                  setSelectedBuilding(null);
+                }
+              }}
+              onTrainSoldier={(bldId) => {
+                if (worldRef.current) {
+                  worldRef.current.trainSoldierAtBarracks(bldId);
+                }
+              }}
+              currentInventory={hudInventory}
+              currentIndex={bldIdx >= 0 ? bldIdx : undefined}
+              totalCount={list.length}
+              onPrevBuilding={() => handleCycleBuilding(-1)}
+              onNextBuilding={() => handleCycleBuilding(1)}
+            />
+          );
+        })()
       )}
 
       {/* Unit Inspector Modal */}
       {!isMainMenuOpen && selectedUnitId && worldRef.current && (
         (() => {
-          const unit = worldRef.current.units.find((u) => u.id === selectedUnitId);
+          const units = worldRef.current.units;
+          const unitIdx = units.findIndex((u) => u.id === selectedUnitId);
+          const unit = unitIdx >= 0 ? units[unitIdx] : undefined;
           return unit ? (
             <UnitInspector
               unit={unit}
@@ -469,6 +580,10 @@ export default function App() {
                   worldRef.current.assignUnitJob(unitId, jobId);
                 }
               }}
+              currentIndex={unitIdx >= 0 ? unitIdx : undefined}
+              totalCount={units.length}
+              onPrevUnit={() => handleCycleUnit(-1)}
+              onNextUnit={() => handleCycleUnit(1)}
             />
           ) : null;
         })()

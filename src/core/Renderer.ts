@@ -4,6 +4,7 @@ import { BuildingInstance } from '../types';
 import { isoToScreen } from '../iso';
 import { TILE_WIDTH, TILE_HEIGHT } from '../constants';
 import { getBuilding } from '../content/buildings';
+import { JOBS } from '../content/jobs';
 
 export interface RenderOptions {
   selectedGridX?: number;
@@ -140,21 +141,63 @@ export class Renderer {
     const halfW = TILE_WIDTH / 2;
     const halfH = TILE_HEIGHT / 2;
 
+    const topX = sx;
+    const topY = sy;
+    const rightX = sx + halfW;
+    const rightY = sy + halfH;
+    const bottomX = sx;
+    const bottomY = sy + TILE_HEIGHT;
+    const leftX = sx - halfW;
+    const leftY = sy + halfH;
+
     ctx.save();
+
+    // 1. Full diamond paved slab base
     ctx.beginPath();
-    ctx.moveTo(sx, sy + 6);
-    ctx.lineTo(sx + halfW - 12, sy + halfH);
-    ctx.lineTo(sx, sy + TILE_HEIGHT - 6);
-    ctx.lineTo(sx - halfW + 12, sy + halfH);
+    ctx.moveTo(topX, topY);
+    ctx.lineTo(rightX, rightY);
+    ctx.lineTo(bottomX, bottomY);
+    ctx.lineTo(leftX, leftY);
     ctx.closePath();
 
-    ctx.fillStyle = '#9ca3af'; // Cobblestone gray
+    // Elegant slate grey paver base (matches stone pavers around town hall)
+    const isAlt = (gx + gy) % 2 === 0;
+    ctx.fillStyle = isAlt ? '#64748b' : '#596579';
     ctx.fill();
 
-    ctx.strokeStyle = '#d1d5db';
-    ctx.lineWidth = 1.5;
-    ctx.setLineDash([4, 4]);
+    // Subtle stone bevel rim
+    ctx.strokeStyle = '#334155';
+    ctx.lineWidth = 1.2;
     ctx.stroke();
+
+    // 2. Cobblestone / Flagstone geometric paver joints
+    ctx.strokeStyle = 'rgba(30, 41, 59, 0.55)';
+    ctx.lineWidth = 1;
+
+    // NW-SE diagonal divider
+    ctx.beginPath();
+    ctx.moveTo(topX, topY);
+    ctx.lineTo(bottomX, bottomY);
+    ctx.moveTo(leftX, leftY);
+    ctx.lineTo(rightX, rightY);
+    ctx.stroke();
+
+    // Secondary paving slab sub-divisions
+    ctx.beginPath();
+    ctx.moveTo((topX + leftX) / 2, (topY + leftY) / 2);
+    ctx.lineTo((bottomX + rightX) / 2, (bottomY + rightY) / 2);
+    ctx.moveTo((topX + rightX) / 2, (topY + rightY) / 2);
+    ctx.lineTo((bottomX + leftX) / 2, (bottomY + leftY) / 2);
+    ctx.stroke();
+
+    // 3. Subtle flagstone surface highlights (top edge highlights for 3D depth)
+    ctx.strokeStyle = 'rgba(241, 245, 249, 0.22)';
+    ctx.lineWidth = 0.8;
+    ctx.beginPath();
+    ctx.moveTo(topX, topY + 1);
+    ctx.lineTo(rightX - 2, rightY);
+    ctx.stroke();
+
     ctx.restore();
   }
 
@@ -186,8 +229,9 @@ export class Renderer {
     for (const bld of world.buildings) {
       const def = getBuilding(bld.defId);
       const size = def?.size || { w: 1, h: 1 };
+      const isRoadOrBridge = def?.id === 'bridge' || def?.id === 'road';
       items.push({
-        depth: bld.x + bld.y + size.w + size.h - 0.4,
+        depth: isRoadOrBridge ? bld.x + bld.y + 0.05 : bld.x + bld.y + size.w + size.h - 0.7,
         type: 'building',
         data: bld,
       });
@@ -196,7 +240,7 @@ export class Renderer {
     // 3. Units
     for (const unit of world.units) {
       items.push({
-        depth: unit.x + unit.y + 0.5,
+        depth: unit.x + unit.y + 0.8,
         type: 'unit',
         data: unit,
       });
@@ -210,7 +254,7 @@ export class Renderer {
       if (item.type === 'feature') {
         this.drawFeature(item.data.x, item.data.y, item.data.feature, item.data.terrain);
       } else if (item.type === 'building') {
-        this.drawBuilding(item.data, options.selectedBuildingId === item.data.id);
+        this.drawBuilding(item.data, options.selectedBuildingId === item.data.id, world);
       } else if (item.type === 'unit') {
         this.drawUnit(item.data, options.selectedUnitId === item.data.id);
       }
@@ -323,7 +367,7 @@ export class Renderer {
     }
   }
 
-  private drawBuilding(bld: BuildingInstance, isSelected: boolean): void {
+  private drawBuilding(bld: BuildingInstance, isSelected: boolean, world?: World): void {
     const ctx = this.ctx;
     const def = getBuilding(bld.defId);
     if (!def) return;
@@ -356,6 +400,9 @@ export class Renderer {
 
     // 3. Render Finished Building Architecture
     switch (def.id) {
+      case 'bridge':
+        this.drawBridgeArt(centerX, centerY, bld, world);
+        break;
       case 'town_hall':
         this.drawTownHallArt(centerX, centerY);
         break;
@@ -387,12 +434,126 @@ export class Renderer {
       case 'gate':
         this.drawGateArt(centerX, centerY);
         break;
+      case 'road':
+        // Seamlessly rendered on the terrain grid layer
+        break;
       case 'turret':
         this.drawTurretArt(centerX, centerY);
         break;
       default:
         this.drawGenericBuilding(centerX, centerY, def.name);
     }
+
+    // 4. Productivity Status Indicators
+    if (bld.isConstructed && def.workJob && world) {
+      const jobDef = JOBS[def.workJob];
+      const hasWorkers = bld.assignedWorkerIds.length > 0;
+      const badgeY = centerY - (def.size.h * 26 + 22);
+
+      if (!hasWorkers) {
+        // No worker assigned icon
+        this.drawBuildingStatusBadge(centerX, badgeY, 'no_worker', 'No Worker');
+      } else if (jobDef) {
+        // Check if missing store input materials
+        const storeInputs = jobDef.inputs.filter((i) => i.from === 'store');
+        let missingLabel: string | null = null;
+        for (const input of storeInputs) {
+          if (world.store.get(input.res) < input.qty) {
+            missingLabel = input.res === 'log' ? 'No Logs' : input.res === 'coal' ? 'No Coal' : input.res === 'iron_ore' ? 'No Iron Ore' : 'No Input';
+            break;
+          }
+        }
+
+        if (missingLabel) {
+          this.drawBuildingStatusBadge(centerX, badgeY, 'no_materials', missingLabel);
+        }
+      }
+    }
+
+    ctx.restore();
+  }
+
+  private drawBuildingStatusBadge(
+    cx: number,
+    baseCy: number,
+    type: 'no_worker' | 'no_materials',
+    label: string
+  ): void {
+    const ctx = this.ctx;
+    // Subtle vertical floating bob
+    const bob = Math.sin(this.animTimeMs / 250) * 3;
+    const cy = baseCy + bob;
+
+    ctx.save();
+
+    const isWorkerAlert = type === 'no_worker';
+    const pillW = isWorkerAlert ? 78 : 82;
+    const pillH = 18;
+    const pillR = 9;
+
+    // Drop shadow
+    ctx.beginPath();
+    ctx.roundRect(cx - pillW / 2 + 1, cy - pillH / 2 + 2, pillW, pillH, pillR);
+    ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
+    ctx.fill();
+
+    // Main Badge Body
+    ctx.beginPath();
+    ctx.roundRect(cx - pillW / 2, cy - pillH / 2, pillW, pillH, pillR);
+    ctx.fillStyle = isWorkerAlert ? '#d97706' : '#dc2626'; // Amber vs Red
+    ctx.fill();
+    ctx.strokeStyle = isWorkerAlert ? '#78350f' : '#7f1d1d';
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
+
+    // Little downward pointer triangle
+    ctx.beginPath();
+    ctx.moveTo(cx - 4, cy + pillH / 2 - 1);
+    ctx.lineTo(cx + 4, cy + pillH / 2 - 1);
+    ctx.lineTo(cx, cy + pillH / 2 + 4);
+    ctx.closePath();
+    ctx.fillStyle = isWorkerAlert ? '#d97706' : '#dc2626';
+    ctx.fill();
+
+    // Draw Vector Icon inside badge
+    const iconX = cx - pillW / 2 + 10;
+    const iconY = cy;
+
+    if (isWorkerAlert) {
+      // Worker silhouette + exclamation mark
+      // Head
+      ctx.beginPath();
+      ctx.arc(iconX, iconY - 3, 2.5, 0, Math.PI * 2);
+      ctx.fillStyle = '#ffffff';
+      ctx.fill();
+      // Shoulders
+      ctx.beginPath();
+      ctx.arc(iconX, iconY + 5, 4, Math.PI, 0);
+      ctx.fillStyle = '#ffffff';
+      ctx.fill();
+      // Amber exclamation mark on top
+      ctx.fillStyle = '#fef08a';
+      ctx.font = 'bold 8px sans-serif';
+      ctx.textAlign = 'center';
+      ctx.fillText('!', iconX + 6, iconY - 2);
+    } else {
+      // Material / Crate box icon
+      ctx.strokeStyle = '#ffffff';
+      ctx.lineWidth = 1.2;
+      ctx.strokeRect(iconX - 4, iconY - 4, 8, 8);
+      ctx.beginPath();
+      ctx.moveTo(iconX - 4, iconY - 4);
+      ctx.lineTo(iconX + 4, iconY + 4);
+      ctx.moveTo(iconX + 4, iconY - 4);
+      ctx.lineTo(iconX - 4, iconY + 4);
+      ctx.stroke();
+    }
+
+    // Label Text
+    ctx.fillStyle = '#ffffff';
+    ctx.font = 'bold 9px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText(label, iconX + 7, cy + 3);
 
     ctx.restore();
   }
@@ -401,36 +562,59 @@ export class Renderer {
     const ctx = this.ctx;
     const progress = Math.min(1, bld.buildProgressMs / bld.totalBuildMs);
 
-    // Foundation shadow
-    ctx.beginPath();
-    ctx.ellipse(cx, cy, 32, 16, 0, 0, Math.PI * 2);
-    ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
-    ctx.fill();
+    if (bld.defId === 'bridge') {
+      // Water stilts and unfinished wooden trestles for bridge
+      ctx.strokeStyle = '#78350f';
+      ctx.lineWidth = 3;
+      ctx.beginPath();
+      ctx.moveTo(cx - 30, cy + 10);
+      ctx.lineTo(cx - 30, cy - 12);
+      ctx.moveTo(cx + 30, cy + 10);
+      ctx.lineTo(cx + 30, cy - 12);
+      ctx.moveTo(cx - 35, cy - 12);
+      ctx.lineTo(cx + 35, cy - 12);
+      ctx.stroke();
 
-    // Wooden timber scaffold frame
-    ctx.strokeStyle = '#d97706';
-    ctx.lineWidth = 3;
-    ctx.strokeRect(cx - 24, cy - 35, 48, 35);
-    ctx.beginPath();
-    ctx.moveTo(cx - 24, cy - 35);
-    ctx.lineTo(cx + 24, cy);
-    ctx.moveTo(cx + 24, cy - 35);
-    ctx.lineTo(cx - 24, cy);
-    ctx.stroke();
+      // Planks laid down so far
+      ctx.fillStyle = '#b45309';
+      ctx.fillRect(cx - 24, cy - 15, 48 * progress, 5);
+
+      // Wood shavings floating on water
+      ctx.fillStyle = '#d97706';
+      ctx.fillRect(cx - 12, cy + 6, 4, 2);
+      ctx.fillRect(cx + 10, cy + 10, 3, 2);
+    } else {
+      // Foundation shadow
+      ctx.beginPath();
+      ctx.ellipse(cx, cy, 32, 16, 0, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.4)';
+      ctx.fill();
+
+      // Wooden timber scaffold frame
+      ctx.strokeStyle = '#d97706';
+      ctx.lineWidth = 3;
+      ctx.strokeRect(cx - 24, cy - 35, 48, 35);
+      ctx.beginPath();
+      ctx.moveTo(cx - 24, cy - 35);
+      ctx.lineTo(cx + 24, cy);
+      ctx.moveTo(cx + 24, cy - 35);
+      ctx.lineTo(cx - 24, cy);
+      ctx.stroke();
+    }
 
     // Progress bar above scaffolding
     const barW = 44;
     const barH = 7;
     ctx.fillStyle = 'rgba(15, 23, 42, 0.85)';
-    ctx.fillRect(cx - barW / 2 - 1, cy - 50 - 1, barW + 2, barH + 2);
+    ctx.fillRect(cx - barW / 2 - 1, cy - 42 - 1, barW + 2, barH + 2);
 
     ctx.fillStyle = '#f59e0b';
-    ctx.fillRect(cx - barW / 2, cy - 50, barW * progress, barH);
+    ctx.fillRect(cx - barW / 2, cy - 42, barW * progress, barH);
 
     ctx.fillStyle = '#ffffff';
     ctx.font = 'bold 9px sans-serif';
     ctx.textAlign = 'center';
-    ctx.fillText(`${Math.floor(progress * 100)}%`, cx, cy - 54);
+    ctx.fillText(`${Math.floor(progress * 100)}%`, cx, cy - 46);
   }
 
   private drawTownHallArt(cx: number, cy: number): void {
@@ -817,6 +1001,231 @@ export class Renderer {
     ctx.fillStyle = '#f59e0b';
     ctx.fillRect(0, -1, 12, 2);
     ctx.restore();
+  }
+
+  private drawBridgeArt(cx: number, cy: number, bld: BuildingInstance, world?: World): void {
+    const ctx = this.ctx;
+    const gx = bld.x;
+    const gy = bld.y;
+
+    // Check neighboring tiles to see if bridge connects along axes
+    let connectN = false;
+    let connectS = false;
+    let connectW = false;
+    let connectE = false;
+
+    if (world) {
+      const tileN = world.grid.getTile(gx, gy - 1);
+      const tileS = world.grid.getTile(gx, gy + 1);
+      const tileW = world.grid.getTile(gx - 1, gy);
+      const tileE = world.grid.getTile(gx + 1, gy);
+
+      connectN = !!(tileN && (tileN.bridge || tileN.terrain !== 'water'));
+      connectS = !!(tileS && (tileS.bridge || tileS.terrain !== 'water'));
+      connectW = !!(tileW && (tileW.bridge || tileW.terrain !== 'water'));
+      connectE = !!(tileE && (tileE.bridge || tileE.terrain !== 'water'));
+    }
+
+    // 1. Water Pilings / Wooden Stilts (4 structural posts driven into water)
+    const stilts = [
+      { x: cx - 44, y: cy - 6 },
+      { x: cx + 44, y: cy - 6 },
+      { x: cx, y: cy + 18 },
+      { x: cx, y: cy - 20 },
+    ];
+
+    for (const st of stilts) {
+      // Water foam / ripple at base
+      ctx.beginPath();
+      ctx.ellipse(st.x, st.y + 13, 5, 2.5, 0, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(224, 242, 254, 0.45)';
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(147, 197, 253, 0.6)';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      // Stilt column
+      ctx.fillStyle = '#451a03'; // Dark wood shadow
+      ctx.fillRect(st.x - 3, st.y, 6, 14);
+      ctx.fillStyle = '#78350f'; // Wood beam highlight
+      ctx.fillRect(st.x - 2, st.y, 4, 14);
+    }
+
+    // 2. Heavy Timber Stringers / Longitudinal Beams
+    ctx.strokeStyle = '#5c3a21';
+    ctx.lineWidth = 4;
+    ctx.beginPath();
+    ctx.moveTo(cx - 52, cy);
+    ctx.lineTo(cx, cy + 26);
+    ctx.lineTo(cx + 52, cy);
+    ctx.lineTo(cx, cy - 26);
+    ctx.closePath();
+    ctx.stroke();
+
+    // 3. Wooden Decking Platform (Raised 4px above water)
+    const deckElev = 4;
+    const topX = cx;
+    const topY = cy - 28 - deckElev;
+    const rightX = cx + 58;
+    const rightY = cy - deckElev;
+    const bottomX = cx;
+    const bottomY = cy + 28 - deckElev;
+    const leftX = cx - 58;
+    const leftY = cy - deckElev;
+
+    // 3D Timber Fascia Edges
+    // Bottom-Left rim (in shadow)
+    ctx.beginPath();
+    ctx.moveTo(leftX, leftY);
+    ctx.lineTo(bottomX, bottomY);
+    ctx.lineTo(bottomX, bottomY + deckElev);
+    ctx.lineTo(leftX, leftY + deckElev);
+    ctx.closePath();
+    ctx.fillStyle = '#5c3a21';
+    ctx.fill();
+    ctx.strokeStyle = '#451a03';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // Bottom-Right rim (illuminated)
+    ctx.beginPath();
+    ctx.moveTo(bottomX, bottomY);
+    ctx.lineTo(rightX, rightY);
+    ctx.lineTo(rightX, rightY + deckElev);
+    ctx.lineTo(bottomX, bottomY + deckElev);
+    ctx.closePath();
+    ctx.fillStyle = '#78350f';
+    ctx.fill();
+    ctx.strokeStyle = '#451a03';
+    ctx.lineWidth = 1;
+    ctx.stroke();
+
+    // Main Deck Base
+    ctx.beginPath();
+    ctx.moveTo(topX, topY);
+    ctx.lineTo(rightX, rightY);
+    ctx.lineTo(bottomX, bottomY);
+    ctx.lineTo(leftX, leftY);
+    ctx.closePath();
+    ctx.fillStyle = '#92400e';
+    ctx.fill();
+
+    // 4. Wooden Deck Planks (Interleaved rich golden cedar / amber oak planks)
+    const plankColors = [
+      '#b45309',
+      '#d97706',
+      '#c2410c',
+      '#a16207',
+      '#b45309',
+      '#d97706',
+      '#cd853f',
+      '#92400e',
+    ];
+
+    const numPlanks = 8;
+    for (let i = 0; i < numPlanks; i++) {
+      const t0 = i / numPlanks;
+      const t1 = (i + 1) / numPlanks;
+
+      // Calculate plank corners along diamond edges (NW to SE orientation)
+      const p1x = leftX + (topX - leftX) * t0;
+      const p1y = leftY + (topY - leftY) * t0;
+      const p2x = leftX + (topX - leftX) * t1;
+      const p2y = leftY + (topY - leftY) * t1;
+
+      const p3x = bottomX + (rightX - bottomX) * t1;
+      const p3y = bottomY + (rightY - bottomY) * t1;
+      const p4x = bottomX + (rightX - bottomX) * t0;
+      const p4y = bottomY + (rightY - bottomY) * t0;
+
+      ctx.beginPath();
+      ctx.moveTo(p1x, p1y);
+      ctx.lineTo(p2x, p2y);
+      ctx.lineTo(p3x, p3y);
+      ctx.lineTo(p4x, p4y);
+      ctx.closePath();
+
+      ctx.fillStyle = plankColors[i % plankColors.length];
+      ctx.fill();
+
+      // Dark plank separation groove
+      ctx.strokeStyle = '#451a03';
+      ctx.lineWidth = 1;
+      ctx.stroke();
+
+      // Top wood-grain highlight line
+      ctx.beginPath();
+      ctx.moveTo(p1x + 2, p1y + 1);
+      ctx.lineTo(p4x - 2, p4y + 1);
+      ctx.strokeStyle = 'rgba(253, 224, 71, 0.35)';
+      ctx.lineWidth = 0.8;
+      ctx.stroke();
+
+      // Nail / peg studs on plank ends
+      ctx.fillStyle = '#291809';
+      ctx.beginPath();
+      ctx.arc(p1x + 4, p1y + 2, 1, 0, Math.PI * 2);
+      ctx.arc(p4x - 4, p4y - 2, 1, 0, Math.PI * 2);
+      ctx.fill();
+    }
+
+    // 5. Wooden Guard Rails & Posts
+    const cornerPosts = [
+      { x: leftX + 4, y: leftY },
+      { x: rightX - 4, y: rightY },
+      { x: topX, y: topY + 3 },
+      { x: bottomX, y: bottomY - 3 },
+    ];
+
+    for (const post of cornerPosts) {
+      // Post shadow
+      ctx.fillStyle = '#451a03';
+      ctx.fillRect(post.x - 2, post.y - 12, 4, 12);
+      // Post face
+      ctx.fillStyle = '#92400e';
+      ctx.fillRect(post.x - 1, post.y - 12, 2, 12);
+      // Post cap
+      ctx.fillStyle = '#b45309';
+      ctx.fillRect(post.x - 2.5, post.y - 14, 5, 2.5);
+    }
+
+    // Handrails on sides not connecting to other land/bridges
+    // NW side (top to left)
+    if (!connectW && !connectN) {
+      ctx.strokeStyle = '#78350f';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.moveTo(leftX + 4, leftY - 9);
+      ctx.lineTo(topX, topY - 6);
+      ctx.stroke();
+    }
+    // SE side (bottom to right)
+    if (!connectE && !connectS) {
+      ctx.strokeStyle = '#78350f';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.moveTo(bottomX, bottomY - 12);
+      ctx.lineTo(rightX - 4, rightY - 9);
+      ctx.stroke();
+    }
+    // SW side (left to bottom)
+    if (!connectW && !connectS) {
+      ctx.strokeStyle = '#5c3a21';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.moveTo(leftX + 4, leftY - 9);
+      ctx.lineTo(bottomX, bottomY - 12);
+      ctx.stroke();
+    }
+    // NE side (top to right)
+    if (!connectN && !connectE) {
+      ctx.strokeStyle = '#92400e';
+      ctx.lineWidth = 2.5;
+      ctx.beginPath();
+      ctx.moveTo(topX, topY - 6);
+      ctx.lineTo(rightX - 4, rightY - 9);
+      ctx.stroke();
+    }
   }
 
   private drawGenericBuilding(cx: number, cy: number, name: string): void {

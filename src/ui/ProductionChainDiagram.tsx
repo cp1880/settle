@@ -48,7 +48,7 @@ export const ProductionChainDiagram: React.FC<ProductionChainDiagramProps> = ({ 
               {/* Step B */}
               <div className="bg-neutral-900/80 p-3 rounded-lg border border-neutral-700/60 flex flex-col gap-1 min-w-36">
                 <span className="text-[10.5px] text-neutral-400">Storehouse Material</span>
-                <span className="font-bold text-amber-500">2x Raw Logs ({inventory.log || 0})</span>
+                <span className="font-bold text-amber-500">1x Raw Log ({inventory.log || 0})</span>
                 <span className="text-[10px] text-neutral-500">Processed at Sawmill</span>
               </div>
 
@@ -57,7 +57,7 @@ export const ProductionChainDiagram: React.FC<ProductionChainDiagramProps> = ({ 
               {/* Step C */}
               <div className="bg-neutral-900/80 p-3 rounded-lg border border-neutral-700/60 flex flex-col gap-1 min-w-36">
                 <span className="text-[10.5px] text-neutral-400">Finished Product</span>
-                <span className="font-bold text-amber-200">1x Wood Plank ({inventory.wood || 0})</span>
+                <span className="font-bold text-amber-200">2x Wood Planks ({inventory.wood || 0})</span>
                 <span className="text-[10px] text-neutral-500">Used for All Buildings</span>
               </div>
             </div>

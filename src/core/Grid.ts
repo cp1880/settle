@@ -48,6 +48,9 @@ export class Grid {
     // Road is fastest
     if (tile.road) return ROAD_COST;
 
+    // Wooden Bridge makes water passable and fast
+    if (tile.bridge) return 1.2;
+
     // Water is blocked
     if (tile.terrain === 'water') return Infinity;
 
@@ -82,14 +85,18 @@ export class Grid {
   /**
    * Checks if an area is clear to place a building of size w*h
    */
-  canPlaceBuilding(x: number, y: number, w: number, h: number): boolean {
+  canPlaceBuilding(x: number, y: number, w: number, h: number, allowedTerrains?: TerrainType[]): boolean {
     for (let dy = 0; dy < h; dy++) {
       for (let dx = 0; dx < w; dx++) {
         const tx = x + dx;
         const ty = y + dy;
         const tile = this.getTile(tx, ty);
         if (!tile) return false;
-        if (tile.terrain === 'water') return false;
+        if (allowedTerrains && allowedTerrains.length > 0) {
+          if (!allowedTerrains.includes(tile.terrain)) return false;
+        } else {
+          if (tile.terrain === 'water') return false;
+        }
         if (tile.buildingId) return false;
       }
     }
@@ -170,61 +177,61 @@ export class Grid {
           feature = riverDist < 0.6 ? 'deep_water' : 'shallow_water';
         } else {
           if (preset === 'valley') {
-            // River Valley: Lush plains, rivers/lakes, rich rock ridges and forest groves
+            // River Valley: Lush plains, rivers/lakes, gentle rock ridges and forest groves
             if (nElevation < 0.30 || (nMoisture > 0.72 && nElevation < 0.42)) {
               terrain = 'water';
               feature = nElevation < 0.22 ? 'deep_water' : 'shallow_water';
-            } else if (nElevation > 0.62) {
+            } else if (nElevation > 0.74) {
               terrain = 'rocky';
               const r = Math.random();
-              if (r < 0.55) feature = 'rock_outcrop';
-              else if (r < 0.75) feature = 'iron_seam';
+              if (r < 0.40) feature = 'rock_outcrop';
+              else if (r < 0.70) feature = 'iron_seam';
               else feature = 'coal_seam';
             } else if (nMoisture > 0.48) {
               terrain = 'forest';
               if (Math.random() < 0.75) feature = 'tree';
-              if (Math.random() < 0.08) feature = 'rock_outcrop';
+              if (Math.random() < 0.015) feature = 'rock_outcrop';
             } else {
               terrain = 'grass';
-              if (Math.random() < 0.15) feature = 'tree';
-              if (Math.random() < 0.08) feature = 'rock_outcrop';
-              if (nElevation > 0.52 && Math.random() < 0.12) feature = 'coal_seam';
+              if (Math.random() < 0.18) feature = 'tree';
+              if (Math.random() < 0.015) feature = 'rock_outcrop';
+              if (nElevation > 0.58 && Math.random() < 0.05) feature = 'coal_seam';
             }
           } else if (preset === 'mountains') {
-            // Mountain Quarry Outpost: Abundant rock outcrops, mineral veins, mountain lakes
+            // Mountain Quarry Outpost: Scattered rocky ridges, mineral veins, mountain lakes
             if (nElevation < 0.26) {
               terrain = 'water';
               feature = 'shallow_water';
-            } else if (nElevation > 0.45) {
+            } else if (nElevation > 0.60) {
               terrain = 'rocky';
               const r = Math.random();
-              if (r < 0.60) feature = 'rock_outcrop';
-              else if (r < 0.80) feature = 'iron_seam';
+              if (r < 0.45) feature = 'rock_outcrop';
+              else if (r < 0.75) feature = 'iron_seam';
               else feature = 'coal_seam';
             } else if (nMoisture > 0.55) {
               terrain = 'forest';
               feature = 'tree';
             } else {
               terrain = 'grass';
-              if (Math.random() < 0.15) feature = 'rock_outcrop';
-              if (Math.random() < 0.12) feature = 'tree';
+              if (Math.random() < 0.03) feature = 'rock_outcrop';
+              if (Math.random() < 0.15) feature = 'tree';
             }
           } else {
-            // Dense Timber Forest: Endless wood, streams, scattered mossy stones
+            // Dense Timber Forest: Endless wood, streams, rare mossy stones
             if (nElevation < 0.24 || nMoisture > 0.82) {
               terrain = 'water';
               feature = 'shallow_water';
-            } else if (nElevation > 0.70) {
+            } else if (nElevation > 0.76) {
               terrain = 'rocky';
-              feature = Math.random() < 0.7 ? 'rock_outcrop' : 'iron_seam';
+              feature = Math.random() < 0.5 ? 'rock_outcrop' : 'iron_seam';
             } else if (nMoisture > 0.28) {
               terrain = 'forest';
               if (Math.random() < 0.85) feature = 'tree';
-              if (Math.random() < 0.06) feature = 'rock_outcrop';
+              if (Math.random() < 0.012) feature = 'rock_outcrop';
             } else {
               terrain = 'grass';
               if (Math.random() < 0.35) feature = 'tree';
-              if (Math.random() < 0.06) feature = 'rock_outcrop';
+              if (Math.random() < 0.012) feature = 'rock_outcrop';
             }
           }
         }

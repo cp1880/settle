@@ -7,6 +7,7 @@ export interface TileData {
   terrain: TerrainType;
   feature?: FeatureType;
   road?: boolean;
+  bridge?: boolean; // True when a wooden bridge is built/present
   buildingId?: string; // ID of building placed on this tile
   elevation?: number;
 }
@@ -47,6 +48,7 @@ export interface BuildingDef {
     damage: number;
     fireMs: number;
   };
+  allowedTerrains?: TerrainType[];
 }
 
 export interface JobInput {

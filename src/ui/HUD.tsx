@@ -47,6 +47,7 @@ interface HUDProps {
   onToggleRoadTool: () => void;
   demolishToolActive: boolean;
   onToggleDemolishTool: () => void;
+  onCycleVillager?: () => void;
 }
 
 export const HUD: React.FC<HUDProps> = ({
@@ -71,6 +72,7 @@ export const HUD: React.FC<HUDProps> = ({
   onToggleRoadTool,
   demolishToolActive,
   onToggleDemolishTool,
+  onCycleVillager,
 }) => {
   return (
     <header className="absolute top-0 left-0 right-0 p-3 pointer-events-none flex flex-col gap-2 z-20">
@@ -193,14 +195,20 @@ export const HUD: React.FC<HUDProps> = ({
 
           <div className="h-4 w-px bg-neutral-700" />
 
-          {/* Population & Beds */}
-          <div
-            className={`flex items-center gap-1.5 text-xs font-semibold ${population >= totalBeds ? 'text-amber-400' : 'text-emerald-400'}`}
-            title={`Population: ${population} / Beds: ${totalBeds}`}
+          {/* Population & Beds (Clickable to cycle & focus camera on villagers) */}
+          <button
+            onClick={(e) => {
+              e.stopPropagation();
+              onCycleVillager && onCycleVillager();
+            }}
+            className={`flex items-center gap-1.5 text-xs font-semibold px-2 py-0.5 rounded-lg transition hover:bg-neutral-800 active:scale-95 ${
+              population >= totalBeds ? 'text-amber-400' : 'text-emerald-400'
+            }`}
+            title={`Population: ${population} / Beds: ${totalBeds} (Click to cycle and center camera on villagers)`}
           >
             <Users className="w-3.5 h-3.5" />
             <span>{population}/{totalBeds} Beds</span>
-          </div>
+          </button>
 
           {/* Storage Meter */}
           <div

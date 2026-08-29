@@ -151,7 +151,7 @@ export class World {
     }
 
     // Check grid space
-    if (!this.grid.canPlaceBuilding(gridX, gridY, def.size.w, def.size.h)) {
+    if (!this.grid.canPlaceBuilding(gridX, gridY, def.size.w, def.size.h, def.allowedTerrains)) {
       return null;
     }
 
@@ -178,6 +178,7 @@ export class World {
       for (let dx = 0; dx < def.size.w; dx++) {
         this.grid.setTile(gridX + dx, gridY + dy, {
           buildingId,
+          bridge: defId === 'bridge' ? true : undefined,
           // If building on road or tree, remove tree
           feature: undefined,
         });
@@ -240,7 +241,7 @@ export class World {
         if (def) {
           for (let dy = 0; dy < def.size.h; dy++) {
             for (let dx = 0; dx < def.size.w; dx++) {
-              this.grid.setTile(bld.x + dx, bld.y + dy, { buildingId: undefined });
+              this.grid.setTile(bld.x + dx, bld.y + dy, { buildingId: undefined, bridge: undefined });
             }
           }
         }
@@ -385,8 +386,26 @@ export class World {
 
     // 2. Step each unit state machine
     for (const unit of this.units) {
+      // Safety clamp so villagers can never escape or get NaN / off-map coordinates
+      if (
+        isNaN(unit.data.x) ||
+        isNaN(unit.data.y) ||
+        unit.data.x < 0 ||
+        unit.data.y < 0 ||
+        unit.data.x >= this.grid.width ||
+        unit.data.y >= this.grid.height
+      ) {
+        const th = this.buildings.find((b) => b.defId === 'town_hall');
+        unit.data.x = th ? th.x + 1 : 10;
+        unit.data.y = th ? th.y + 2 : 10;
+        unit.data.gridX = Math.floor(unit.data.x);
+        unit.data.gridY = Math.floor(unit.data.y);
+        unit.data.path = [];
+        unit.setState('idle');
+      }
+
       const currentTile = this.grid.getTile(unit.gridX, unit.gridY);
-      const isRoad = currentTile?.road || false;
+      const isRoadOrBridge = currentTile?.road || currentTile?.bridge || false;
 
       switch (unit.state) {
         case 'idle': {
@@ -398,7 +417,7 @@ export class World {
         case 'move_to_building':
         case 'move_to_store':
         case 'patrol': {
-          const reached = unit.updateMovement(deltaSec, isRoad);
+          const reached = unit.updateMovement(deltaSec, isRoadOrBridge);
           if (reached) {
             this.handleUnitArrived(unit);
           }
@@ -676,25 +695,36 @@ export class World {
       def.size.h
     );
 
-    if (entrance) {
-      if (worker.gridX === entrance[0] && worker.gridY === entrance[1]) {
-        worker.data.targetX = building.x;
-        worker.data.targetY = building.y;
-        this.handleUnitArrived(worker);
-        return;
-      }
-      const path = this.pathfinder.findPath(worker.gridX, worker.gridY, entrance[0], entrance[1]);
-      if (path && path.length > 0) {
-        worker.setPath(path);
-        worker.data.targetX = building.x;
-        worker.data.targetY = building.y;
-        worker.setState('move_to_building');
-        return;
-      }
+    const workTargetX = entrance
+      ? entrance[0]
+      : Math.min(this.grid.width - 1, Math.max(0, building.x + Math.floor(def.size.w / 2)));
+    const workTargetY = entrance
+      ? entrance[1]
+      : Math.min(this.grid.height - 1, Math.max(0, building.y + def.size.h));
+
+    if (worker.gridX === workTargetX && worker.gridY === workTargetY) {
+      worker.data.targetX = workTargetX;
+      worker.data.targetY = workTargetY;
+      this.handleUnitArrived(worker);
+      return;
     }
 
-    worker.data.targetX = building.x;
-    worker.data.targetY = building.y;
+    const path = this.pathfinder.findPath(worker.gridX, worker.gridY, workTargetX, workTargetY);
+    if (path && path.length > 0) {
+      worker.setPath(path);
+      worker.data.targetX = workTargetX;
+      worker.data.targetY = workTargetY;
+      worker.setState('move_to_building');
+      return;
+    }
+
+    // Direct placement outside the building so worker is always in plain sight
+    worker.data.x = workTargetX;
+    worker.data.y = workTargetY;
+    worker.data.gridX = workTargetX;
+    worker.data.gridY = workTargetY;
+    worker.data.targetX = workTargetX;
+    worker.data.targetY = workTargetY;
     this.handleUnitArrived(worker);
   }
 
