@@ -10,6 +10,8 @@ export interface TileData {
   bridge?: boolean; // True when a wooden bridge is built/present
   buildingId?: string; // ID of building placed on this tile
   elevation?: number;
+  resourceRemaining?: number; // Stone / Ore / Wood remaining in this natural node
+  resourceMax?: number; // Maximum initial capacity (e.g. 20 for rocks/ores)
 }
 
 export interface ResourceCost {

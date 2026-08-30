@@ -2,8 +2,8 @@
 
 export const TILE_WIDTH = 128; // px (2:1 isometric ratio)
 export const TILE_HEIGHT = 64; // px
-export const GRID_SIZE_X = 72; // 72x72 expanded map (4x area)
-export const GRID_SIZE_Y = 72; // 72x72 expanded map (4x area)
+export const GRID_SIZE_X = 100; // tiles
+export const GRID_SIZE_Y = 100; // tiles
 
 // Terrain movement costs for A* pathfinding
 export const TERRAIN_COSTS = {

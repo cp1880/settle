@@ -11,6 +11,7 @@ export interface RenderOptions {
   selectedGridY?: number;
   selectedBuildingId?: string;
   selectedUnitId?: string;
+  selectedResourceNode?: { x: number; y: number } | null;
   buildPreview?: {
     defId: string;
     gridX: number;
@@ -160,19 +161,19 @@ export class Renderer {
     ctx.lineTo(leftX, leftY);
     ctx.closePath();
 
-    // Elegant slate grey paver base (matches stone pavers around town hall)
+    // Clean light grey slate paver base (matches the light grey stone tiles around the Town Hall)
     const isAlt = (gx + gy) % 2 === 0;
-    ctx.fillStyle = isAlt ? '#64748b' : '#596579';
+    ctx.fillStyle = isAlt ? '#cbd5e1' : '#94a3b8';
     ctx.fill();
 
-    // Subtle stone bevel rim
-    ctx.strokeStyle = '#334155';
-    ctx.lineWidth = 1.2;
+    // Solid slate stone perimeter border
+    ctx.strokeStyle = '#475569';
+    ctx.lineWidth = 1.5;
     ctx.stroke();
 
     // 2. Cobblestone / Flagstone geometric paver joints
-    ctx.strokeStyle = 'rgba(30, 41, 59, 0.55)';
-    ctx.lineWidth = 1;
+    ctx.strokeStyle = 'rgba(51, 65, 85, 0.7)';
+    ctx.lineWidth = 1.2;
 
     // NW-SE diagonal divider
     ctx.beginPath();
@@ -190,12 +191,13 @@ export class Renderer {
     ctx.lineTo((bottomX + leftX) / 2, (bottomY + leftY) / 2);
     ctx.stroke();
 
-    // 3. Subtle flagstone surface highlights (top edge highlights for 3D depth)
-    ctx.strokeStyle = 'rgba(241, 245, 249, 0.22)';
-    ctx.lineWidth = 0.8;
+    // 3. Crisp white stone top bevel highlight
+    ctx.strokeStyle = 'rgba(255, 255, 255, 0.75)';
+    ctx.lineWidth = 1.2;
     ctx.beginPath();
-    ctx.moveTo(topX, topY + 1);
-    ctx.lineTo(rightX - 2, rightY);
+    ctx.moveTo(leftX, leftY);
+    ctx.lineTo(topX, topY);
+    ctx.lineTo(rightX, rightY);
     ctx.stroke();
 
     ctx.restore();
@@ -215,11 +217,18 @@ export class Renderer {
     for (let y = 0; y < grid.height; y++) {
       for (let x = 0; x < grid.width; x++) {
         const tile = grid.getTile(x, y);
-        if (tile && tile.feature) {
+        if (tile && (tile.feature || tile.terrain === 'rocky')) {
           items.push({
             depth: x + y + 0.3,
             type: 'feature',
-            data: { x, y, feature: tile.feature, terrain: tile.terrain },
+            data: {
+              x,
+              y,
+              feature: tile.feature || (tile.terrain === 'rocky' ? 'rock_outcrop' : undefined),
+              terrain: tile.terrain,
+              remaining: tile.resourceRemaining,
+              max: tile.resourceMax,
+            },
           });
         }
       }
@@ -252,7 +261,10 @@ export class Renderer {
     // Draw in sorted order
     for (const item of items) {
       if (item.type === 'feature') {
-        this.drawFeature(item.data.x, item.data.y, item.data.feature, item.data.terrain);
+        const isSelected =
+          options.selectedResourceNode?.x === item.data.x &&
+          options.selectedResourceNode?.y === item.data.y;
+        this.drawFeature(item.data.x, item.data.y, item.data.feature, item.data.terrain, isSelected);
       } else if (item.type === 'building') {
         this.drawBuilding(item.data, options.selectedBuildingId === item.data.id, world);
       } else if (item.type === 'unit') {
@@ -261,11 +273,29 @@ export class Renderer {
     }
   }
 
-  private drawFeature(gx: number, gy: number, feature: string, terrain: string): void {
+  private drawFeature(
+    gx: number,
+    gy: number,
+    feature: string | undefined,
+    terrain: string,
+    isSelected?: boolean
+  ): void {
     const ctx = this.ctx;
     const screen = isoToScreen(gx, gy);
     const centerX = screen.x;
     const centerY = screen.y + TILE_HEIGHT / 2;
+
+    // Selection ring if clicked
+    if (isSelected) {
+      ctx.save();
+      ctx.beginPath();
+      ctx.ellipse(centerX, centerY + 4, 26, 13, 0, 0, Math.PI * 2);
+      ctx.strokeStyle = '#38bdf8';
+      ctx.lineWidth = 2.5;
+      ctx.setLineDash([4, 3]);
+      ctx.stroke();
+      ctx.restore();
+    }
 
     if (feature === 'tree') {
       // Animated gentle swaying tree (subtle ~6-8% tile width sway at the top, fixed trunk)
@@ -299,6 +329,130 @@ export class Renderer {
         ctx.lineWidth = 1;
         ctx.stroke();
       }
+    } else if (feature === 'iron_seam') {
+      // Iron Ore Deposit: Darker rock base (medium charcoal-slate) with rich reddish-rust ore veins & specks
+      // Ground contact shadow
+      ctx.beginPath();
+      ctx.ellipse(centerX, centerY + 6, 17, 8, 0, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.38)';
+      ctx.fill();
+
+      // Main craggy dark rock body (darker than stone, lighter than pure coal)
+      ctx.beginPath();
+      ctx.moveTo(centerX - 16, centerY + 4);
+      ctx.lineTo(centerX - 11, centerY - 16);
+      ctx.lineTo(centerX - 2, centerY - 23);
+      ctx.lineTo(centerX + 8, centerY - 20);
+      ctx.lineTo(centerX + 16, centerY - 5);
+      ctx.lineTo(centerX + 13, centerY + 6);
+      ctx.closePath();
+      ctx.fillStyle = '#3f3f46'; // Medium-dark slate/charcoal rock
+      ctx.fill();
+      ctx.strokeStyle = '#27272a';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+
+      // Rock facet - lit plane
+      ctx.beginPath();
+      ctx.moveTo(centerX - 11, centerY - 16);
+      ctx.lineTo(centerX - 2, centerY - 23);
+      ctx.lineTo(centerX + 2, centerY - 10);
+      ctx.lineTo(centerX - 7, centerY - 4);
+      ctx.closePath();
+      ctx.fillStyle = '#52525b';
+      ctx.fill();
+
+      // Secondary smaller rock flank
+      ctx.beginPath();
+      ctx.moveTo(centerX + 5, centerY + 4);
+      ctx.lineTo(centerX + 11, centerY - 10);
+      ctx.lineTo(centerX + 18, centerY - 3);
+      ctx.lineTo(centerX + 16, centerY + 7);
+      ctx.closePath();
+      ctx.fillStyle = '#333338';
+      ctx.fill();
+      ctx.strokeStyle = '#27272a';
+      ctx.lineWidth = 1.2;
+      ctx.stroke();
+
+      // Red/Rust mineral ore veins
+      ctx.strokeStyle = '#991b1b'; // Deep rust red
+      ctx.lineWidth = 2.2;
+      ctx.beginPath();
+      ctx.moveTo(centerX - 8, centerY - 14);
+      ctx.lineTo(centerX - 1, centerY - 8);
+      ctx.lineTo(centerX + 6, centerY - 12);
+      ctx.stroke();
+
+      ctx.strokeStyle = '#c2410c'; // Burnt rust orange
+      ctx.lineWidth = 1.8;
+      ctx.beginPath();
+      ctx.moveTo(centerX - 12, centerY + 1);
+      ctx.lineTo(centerX - 5, centerY - 3);
+      ctx.lineTo(centerX + 3, centerY + 2);
+      ctx.stroke();
+
+      // Scattered specks & chunks of reddish-rust iron ore
+      const oreSpecks = [
+        { x: centerX - 6, y: centerY - 12, r: 2.2, color: '#dc2626' }, // Crimson rust
+        { x: centerX - 1, y: centerY - 18, r: 2.5, color: '#ea580c' }, // Rich rust orange
+        { x: centerX + 4, y: centerY - 11, r: 2.0, color: '#b91c1c' }, // Deep red
+        { x: centerX - 9, y: centerY - 2, r: 1.8, color: '#ea580c' },  // Rust speck
+        { x: centerX + 1, y: centerY - 4, r: 2.6, color: '#f97316' },  // Bright rust ore
+        { x: centerX + 7, y: centerY - 1, r: 2.0, color: '#dc2626' },  // Red mineral
+        { x: centerX + 13, y: centerY - 6, r: 1.8, color: '#ea580c' }, // Flank speck
+        { x: centerX - 3, y: centerY + 3, r: 1.6, color: '#c2410c' },  // Base speck
+      ];
+
+      for (const s of oreSpecks) {
+        ctx.beginPath();
+        ctx.arc(s.x, s.y, s.r, 0, Math.PI * 2);
+        ctx.fillStyle = s.color;
+        ctx.fill();
+
+        // Metallic/mineral glint highlight on top edge of specks
+        ctx.beginPath();
+        ctx.arc(s.x - 0.5, s.y - 0.5, s.r * 0.45, 0, Math.PI * 2);
+        ctx.fillStyle = '#fed7aa'; // Warm light peach/amber glint
+        ctx.fill();
+      }
+    } else if (feature === 'coal_seam') {
+      // Coal Deposit: Jet black glassy crystal shards & dark seams
+      ctx.beginPath();
+      ctx.ellipse(centerX, centerY + 5, 15, 7, 0, 0, Math.PI * 2);
+      ctx.fillStyle = 'rgba(0, 0, 0, 0.45)';
+      ctx.fill();
+
+      // Sharp crystalline black coal cluster
+      ctx.beginPath();
+      ctx.moveTo(centerX - 13, centerY + 2);
+      ctx.lineTo(centerX - 5, centerY - 18);
+      ctx.lineTo(centerX + 2, centerY - 21);
+      ctx.lineTo(centerX + 9, centerY - 12);
+      ctx.lineTo(centerX + 15, centerY + 3);
+      ctx.closePath();
+      ctx.fillStyle = '#18181b'; // Pitch/Jet black
+      ctx.fill();
+      ctx.strokeStyle = '#09090b';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+
+      // Shiny obsidian/anthracite crystal facet highlights
+      ctx.beginPath();
+      ctx.moveTo(centerX - 5, centerY - 18);
+      ctx.lineTo(centerX + 2, centerY - 21);
+      ctx.lineTo(centerX - 1, centerY - 8);
+      ctx.closePath();
+      ctx.fillStyle = '#27272a';
+      ctx.fill();
+
+      // Bright specular edge reflections
+      ctx.strokeStyle = 'rgba(212, 212, 216, 0.4)';
+      ctx.lineWidth = 1;
+      ctx.beginPath();
+      ctx.moveTo(centerX - 5, centerY - 18);
+      ctx.lineTo(centerX + 2, centerY - 21);
+      ctx.stroke();
     } else if (feature === 'rock_outcrop' || terrain === 'rocky') {
       // Rock boulders
       ctx.beginPath();
@@ -328,42 +482,6 @@ export class Renderer {
       ctx.closePath();
       ctx.fillStyle = '#a8a29e';
       ctx.fill();
-    } else if (feature === 'coal_seam') {
-      // Dark coal crystal vein
-      ctx.beginPath();
-      ctx.ellipse(centerX, centerY + 4, 14, 7, 0, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.35)';
-      ctx.fill();
-
-      ctx.beginPath();
-      ctx.moveTo(centerX - 12, centerY);
-      ctx.lineTo(centerX - 4, centerY - 16);
-      ctx.lineTo(centerX + 8, centerY - 14);
-      ctx.lineTo(centerX + 14, centerY + 2);
-      ctx.closePath();
-      ctx.fillStyle = '#1c1917';
-      ctx.fill();
-      ctx.strokeStyle = '#44403c';
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
-    } else if (feature === 'iron_seam') {
-      // Rusty metallic iron vein
-      ctx.beginPath();
-      ctx.ellipse(centerX, centerY + 4, 14, 7, 0, 0, Math.PI * 2);
-      ctx.fillStyle = 'rgba(0, 0, 0, 0.35)';
-      ctx.fill();
-
-      ctx.beginPath();
-      ctx.moveTo(centerX - 14, centerY + 2);
-      ctx.lineTo(centerX - 6, centerY - 18);
-      ctx.lineTo(centerX + 10, centerY - 16);
-      ctx.lineTo(centerX + 14, centerY + 4);
-      ctx.closePath();
-      ctx.fillStyle = '#b45309';
-      ctx.fill();
-      ctx.strokeStyle = '#d97706';
-      ctx.lineWidth = 1.5;
-      ctx.stroke();
     }
   }
 
@@ -435,7 +553,7 @@ export class Renderer {
         this.drawGateArt(centerX, centerY);
         break;
       case 'road':
-        // Seamlessly rendered on the terrain grid layer
+        this.drawRoadTile(bld.x, bld.y, screen.x, screen.y);
         break;
       case 'turret':
         this.drawTurretArt(centerX, centerY);

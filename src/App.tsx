@@ -24,6 +24,7 @@ import { SaveLoadModal } from './ui/SaveLoadModal';
 import { ResourceLedgerModal } from './ui/ResourceLedgerModal';
 import { MainMenu } from './ui/MainMenu';
 import { NotificationsList } from './ui/NotificationsList';
+import { ResourceNodeInspector, ResourceNodeData } from './ui/ResourceNodeInspector';
 
 export default function App() {
   const canvasRef = useRef<HTMLCanvasElement | null>(null);
@@ -47,6 +48,7 @@ export default function App() {
   const [selectedGridTile, setSelectedGridTile] = useState<{ x: number; y: number } | null>(null);
   const [selectedBuilding, setSelectedBuilding] = useState<BuildingInstance | null>(null);
   const [selectedUnitId, setSelectedUnitId] = useState<string | null>(null);
+  const [selectedResourceNode, setSelectedResourceNode] = useState<ResourceNodeData | null>(null);
 
   const [isChainDiagramOpen, setIsChainDiagramOpen] = useState(false);
   const [isResourceLedgerOpen, setIsResourceLedgerOpen] = useState(false);
@@ -172,6 +174,7 @@ export default function App() {
             selectedGridY: selectedGridTile?.y,
             selectedBuildingId: selectedBuilding?.id,
             selectedUnitId: selectedUnitId || undefined,
+            selectedResourceNode,
             buildPreview,
             roadToolActive,
             timeOfDay,
@@ -184,7 +187,7 @@ export default function App() {
 
     animationFrameId = requestAnimationFrame(loop);
     return () => cancelAnimationFrame(animationFrameId);
-  }, [gameSpeed, timeOfDay, selectedDefId, selectedGridTile, selectedBuilding, selectedUnitId, roadToolActive]);
+  }, [gameSpeed, timeOfDay, selectedDefId, selectedGridTile, selectedBuilding, selectedUnitId, selectedResourceNode, roadToolActive]);
 
   // Resize canvas to window size
   useEffect(() => {
@@ -318,6 +321,7 @@ export default function App() {
         setDemolishToolActive(false);
         setSelectedBuilding(null);
         setSelectedUnitId(null);
+        setSelectedResourceNode(null);
         setIsBuildMenuOpen(false);
         setIsChainDiagramOpen(false);
         setIsSaveModalOpen(false);
@@ -411,6 +415,7 @@ export default function App() {
         if (bld) {
           setSelectedBuilding(bld);
           setSelectedUnitId(null);
+          setSelectedResourceNode(null);
           globalAudio.play('click');
           return;
         }
@@ -422,6 +427,24 @@ export default function App() {
       if (clickedUnit) {
         setSelectedUnitId(clickedUnit.id);
         setSelectedBuilding(null);
+        setSelectedResourceNode(null);
+        globalAudio.play('click');
+        return;
+      }
+
+      // Check natural resource feature (rocks, iron ore, coal, trees)
+      if (tile && (tile.feature || tile.terrain === 'rocky')) {
+        const feature = tile.feature || (tile.terrain === 'rocky' ? 'rock_outcrop' : undefined);
+        setSelectedResourceNode({
+          x: gx,
+          y: gy,
+          feature,
+          terrain: tile.terrain,
+          remaining: tile.resourceRemaining ?? (feature === 'tree' ? 4 : 20),
+          max: tile.resourceMax ?? (feature === 'tree' ? 4 : 20),
+        });
+        setSelectedBuilding(null);
+        setSelectedUnitId(null);
         globalAudio.play('click');
         return;
       }
@@ -429,8 +452,47 @@ export default function App() {
       // Deselect inspectors
       setSelectedBuilding(null);
       setSelectedUnitId(null);
+      setSelectedResourceNode(null);
     }
   };
+
+  const handleDirectWorkerToNode = useCallback((x: number, y: number) => {
+    const world = worldRef.current;
+    if (!world) return;
+    const tile = world.grid.getTile(x, y);
+    if (!tile) return;
+
+    // Find nearest free villager or candidate worker
+    const worker =
+      world.units.find((u) => u.data.type === 'villager' && u.state === 'idle') ||
+      world.units.find((u) => u.data.type === 'villager');
+    if (!worker) {
+      world.addNotification('No settlers available to harvest this node!', 'warn');
+      return;
+    }
+
+    const path = world.pathfinder.findPath(worker.gridX, worker.gridY, x, y, true);
+    if (path && path.length > 0) {
+      if (tile.feature === 'rock_outcrop' || tile.terrain === 'rocky') {
+        worker.data.jobId = 'stone_miner';
+      } else if (tile.feature === 'iron_seam') {
+        worker.data.jobId = 'iron_miner';
+      } else if (tile.feature === 'coal_seam') {
+        worker.data.jobId = 'coal_miner';
+      } else if (tile.feature === 'tree') {
+        worker.data.jobId = 'lumberjack';
+      }
+      worker.data.targetX = x;
+      worker.data.targetY = y;
+      worker.setPath(path);
+      worker.setState('move_to_source');
+      world.addFloatingText('Dispatched! 🚶', x, y, '#38bdf8');
+      world.addNotification(`Dispatched ${worker.data.name} to harvest [${x}, ${y}].`, 'info');
+      globalAudio.play('click');
+    } else {
+      world.addNotification('No walkable path to this resource node!', 'warn');
+    }
+  }, []);
 
   const handleWheel = (e: React.WheelEvent<HTMLCanvasElement>) => {
     e.preventDefault();
@@ -586,6 +648,25 @@ export default function App() {
               onNextUnit={() => handleCycleUnit(1)}
             />
           ) : null;
+        })()
+      )}
+
+      {/* Natural Resource Node Inspector Modal */}
+      {!isMainMenuOpen && selectedResourceNode && worldRef.current && (
+        (() => {
+          const tile = worldRef.current.grid.getTile(selectedResourceNode.x, selectedResourceNode.y);
+          const nodeData: ResourceNodeData = {
+            ...selectedResourceNode,
+            remaining: tile?.resourceRemaining ?? selectedResourceNode.remaining,
+            max: tile?.resourceMax ?? selectedResourceNode.max,
+          };
+          return (
+            <ResourceNodeInspector
+              node={nodeData}
+              onClose={() => setSelectedResourceNode(null)}
+              onDirectWorker={handleDirectWorkerToNode}
+            />
+          );
         })()
       )}
 

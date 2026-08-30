@@ -32,6 +32,14 @@ export class Store {
     return Object.values(this.inventory).reduce((sum, qty) => sum + (qty || 0), 0);
   }
 
+  get isFull(): boolean {
+    return this.currentStoredUnits >= this.totalCapacity;
+  }
+
+  get availableSpace(): number {
+    return Math.max(0, this.totalCapacity - this.currentStoredUnits);
+  }
+
   getInventory(): Record<string, number> {
     return { ...this.inventory };
   }

@@ -1,6 +1,94 @@
 import { TileData, TerrainType, FeatureType } from '../types';
 import { TERRAIN_COSTS, ROAD_COST } from '../constants';
 
+// ============================================================================
+// MAP GENERATION CONSTANTS & RESOURCE BALANCING
+// ============================================================================
+
+/** Starting resource unit capacity per individual resource node deposit */
+export const NODE_RESOURCE_CAPACITY = {
+  ROCK_OUTCROP: 20, // Stone units per rock node
+  IRON_SEAM: 20,    // Iron Ore units per seam
+  COAL_SEAM: 20,    // Coal units per seam
+  TREE: 4,          // Timber logs per tree
+};
+
+/** Noise thresholds & spawn probabilities for each scenario preset */
+export const MAP_GENERATION_CONFIG = {
+  // Preset 1: 'valley' (River Valley)
+  VALLEY: {
+    // Water threshold
+    WATER_ELEVATION_MAX: 0.30,
+    LAKE_MOISTURE_MIN: 0.72,
+    LAKE_ELEVATION_MAX: 0.42,
+    DEEP_WATER_ELEVATION_MAX: 0.22,
+
+    // Rocky Mountains / Ridge threshold
+    ROCKY_ELEVATION_MIN: 0.74,
+    // Mineral distribution within rocky tiles:
+    ROCKY_ROCK_CHANCE: 0.20, // 40% stone rock
+    ROCKY_IRON_CHANCE: 0.10, // 30% iron seam
+    ROCKY_COAL_CHANCE: 0.10, // 30% coal seam
+
+    // Forest biome threshold
+    FOREST_MOISTURE_MIN: 0.58,
+    FOREST_TREE_CHANCE: 0.65,
+    FOREST_ROCK_CHANCE: 0.015,
+
+    // Grassy plains biome
+    PLAINS_TREE_CHANCE: 0.10,
+    PLAINS_ROCK_CHANCE: 0.015,
+    PLAINS_COAL_ELEVATION_MIN: 0.58,
+    PLAINS_COAL_CHANCE: 0.05,
+  },
+
+  // Preset 2: 'mountains' (Mountain Quarry Outpost)
+  MOUNTAINS: {
+    // Water threshold
+    WATER_ELEVATION_MAX: 0.26,
+
+    // Rocky peaks threshold
+    ROCKY_ELEVATION_MIN: 0.60,
+    // Mineral distribution within rocky tiles:
+    ROCKY_ROCK_CHANCE: 0.45, // 45% stone rock
+    ROCKY_IRON_CHANCE: 0.30, // 30% iron seam
+    ROCKY_COAL_CHANCE: 0.25, // 25% coal seam
+
+    // Forest slope threshold
+    FOREST_MOISTURE_MIN: 0.55,
+    FOREST_TREE_CHANCE: 1.00,
+
+    // Valley plains biome
+    PLAINS_ROCK_CHANCE: 0.03,
+    PLAINS_TREE_CHANCE: 0.15,
+  },
+
+  // Preset 3: 'forest' (Dense Timber Forest)
+  FOREST: {
+    // Water threshold
+    WATER_ELEVATION_MAX: 0.24,
+    SWAMP_MOISTURE_MIN: 0.82,
+
+    // Rocky outcrop threshold
+    ROCKY_ELEVATION_MIN: 0.76,
+    ROCKY_ROCK_CHANCE: 0.50, // 50% stone rock
+    ROCKY_IRON_CHANCE: 0.50, // 50% iron seam
+
+    // Dense Forest biome threshold
+    FOREST_MOISTURE_MIN: 0.28,
+    FOREST_TREE_CHANCE: 0.85,
+    FOREST_ROCK_CHANCE: 0.012,
+
+    // Grassy clearing biome
+    PLAINS_TREE_CHANCE: 0.35,
+    PLAINS_ROCK_CHANCE: 0.012,
+  },
+
+  // Starter center clearing radius
+  CENTER_CLEARING_RADIUS: 5.5,
+  CENTER_TREE_CHANCE: 0.22,
+};
+
 export class Grid {
   public readonly width: number;
   public readonly height: number;
@@ -166,9 +254,9 @@ export class Grid {
         let feature: FeatureType | undefined = undefined;
 
         // Keep starting area mostly grassy and flat for Town Hall
-        if (distFromCenter < 5.5) {
+        if (distFromCenter < MAP_GENERATION_CONFIG.CENTER_CLEARING_RADIUS) {
           terrain = 'grass';
-          if (distFromCenter > 3.2 && Math.random() < 0.22) {
+          if (distFromCenter > 3.2 && Math.random() < MAP_GENERATION_CONFIG.CENTER_TREE_CHANCE) {
             feature = 'tree';
           }
         } else if (isRiver) {
@@ -177,66 +265,87 @@ export class Grid {
           feature = riverDist < 0.6 ? 'deep_water' : 'shallow_water';
         } else {
           if (preset === 'valley') {
+            const cfg = MAP_GENERATION_CONFIG.VALLEY;
             // River Valley: Lush plains, rivers/lakes, gentle rock ridges and forest groves
-            if (nElevation < 0.30 || (nMoisture > 0.72 && nElevation < 0.42)) {
+            if (nElevation < cfg.WATER_ELEVATION_MAX || (nMoisture > cfg.LAKE_MOISTURE_MIN && nElevation < cfg.LAKE_ELEVATION_MAX)) {
               terrain = 'water';
-              feature = nElevation < 0.22 ? 'deep_water' : 'shallow_water';
-            } else if (nElevation > 0.74) {
+              feature = nElevation < cfg.DEEP_WATER_ELEVATION_MAX ? 'deep_water' : 'shallow_water';
+            } else if (nElevation > cfg.ROCKY_ELEVATION_MIN) {
               terrain = 'rocky';
               const r = Math.random();
-              if (r < 0.40) feature = 'rock_outcrop';
-              else if (r < 0.70) feature = 'iron_seam';
+              if (r < cfg.ROCKY_ROCK_CHANCE) feature = 'rock_outcrop';
+              else if (r < cfg.ROCKY_ROCK_CHANCE + cfg.ROCKY_IRON_CHANCE) feature = 'iron_seam';
               else feature = 'coal_seam';
-            } else if (nMoisture > 0.48) {
+            } else if (nMoisture > cfg.FOREST_MOISTURE_MIN) {
               terrain = 'forest';
-              if (Math.random() < 0.75) feature = 'tree';
-              if (Math.random() < 0.015) feature = 'rock_outcrop';
+              if (Math.random() < cfg.FOREST_TREE_CHANCE) feature = 'tree';
+              if (Math.random() < cfg.FOREST_ROCK_CHANCE) feature = 'rock_outcrop';
             } else {
               terrain = 'grass';
-              if (Math.random() < 0.18) feature = 'tree';
-              if (Math.random() < 0.015) feature = 'rock_outcrop';
-              if (nElevation > 0.58 && Math.random() < 0.05) feature = 'coal_seam';
+              if (Math.random() < cfg.PLAINS_TREE_CHANCE) feature = 'tree';
+              if (Math.random() < cfg.PLAINS_ROCK_CHANCE) feature = 'rock_outcrop';
+              if (nElevation > cfg.PLAINS_COAL_ELEVATION_MIN && Math.random() < cfg.PLAINS_COAL_CHANCE) feature = 'coal_seam';
             }
           } else if (preset === 'mountains') {
+            const cfg = MAP_GENERATION_CONFIG.MOUNTAINS;
             // Mountain Quarry Outpost: Scattered rocky ridges, mineral veins, mountain lakes
-            if (nElevation < 0.26) {
+            if (nElevation < cfg.WATER_ELEVATION_MAX) {
               terrain = 'water';
               feature = 'shallow_water';
-            } else if (nElevation > 0.60) {
+            } else if (nElevation > cfg.ROCKY_ELEVATION_MIN) {
               terrain = 'rocky';
               const r = Math.random();
-              if (r < 0.45) feature = 'rock_outcrop';
-              else if (r < 0.75) feature = 'iron_seam';
+              if (r < cfg.ROCKY_ROCK_CHANCE) feature = 'rock_outcrop';
+              else if (r < cfg.ROCKY_ROCK_CHANCE + cfg.ROCKY_IRON_CHANCE) feature = 'iron_seam';
               else feature = 'coal_seam';
-            } else if (nMoisture > 0.55) {
+            } else if (nMoisture > cfg.FOREST_MOISTURE_MIN) {
               terrain = 'forest';
-              feature = 'tree';
+              if (Math.random() < cfg.FOREST_TREE_CHANCE) feature = 'tree';
             } else {
               terrain = 'grass';
-              if (Math.random() < 0.03) feature = 'rock_outcrop';
-              if (Math.random() < 0.15) feature = 'tree';
+              if (Math.random() < cfg.PLAINS_ROCK_CHANCE) feature = 'rock_outcrop';
+              if (Math.random() < cfg.PLAINS_TREE_CHANCE) feature = 'tree';
             }
           } else {
+            const cfg = MAP_GENERATION_CONFIG.FOREST;
             // Dense Timber Forest: Endless wood, streams, rare mossy stones
-            if (nElevation < 0.24 || nMoisture > 0.82) {
+            if (nElevation < cfg.WATER_ELEVATION_MAX || nMoisture > cfg.SWAMP_MOISTURE_MIN) {
               terrain = 'water';
               feature = 'shallow_water';
-            } else if (nElevation > 0.76) {
+            } else if (nElevation > cfg.ROCKY_ELEVATION_MIN) {
               terrain = 'rocky';
-              feature = Math.random() < 0.5 ? 'rock_outcrop' : 'iron_seam';
-            } else if (nMoisture > 0.28) {
+              feature = Math.random() < cfg.ROCKY_ROCK_CHANCE ? 'rock_outcrop' : 'iron_seam';
+            } else if (nMoisture > cfg.FOREST_MOISTURE_MIN) {
               terrain = 'forest';
-              if (Math.random() < 0.85) feature = 'tree';
-              if (Math.random() < 0.012) feature = 'rock_outcrop';
+              if (Math.random() < cfg.FOREST_TREE_CHANCE) feature = 'tree';
+              if (Math.random() < cfg.FOREST_ROCK_CHANCE) feature = 'rock_outcrop';
             } else {
               terrain = 'grass';
-              if (Math.random() < 0.35) feature = 'tree';
-              if (Math.random() < 0.012) feature = 'rock_outcrop';
+              if (Math.random() < cfg.PLAINS_TREE_CHANCE) feature = 'tree';
+              if (Math.random() < cfg.PLAINS_ROCK_CHANCE) feature = 'rock_outcrop';
             }
           }
         }
 
-        grid.setTile(x, y, { terrain, feature });
+        let resourceRemaining: number | undefined = undefined;
+        let resourceMax: number | undefined = undefined;
+
+        if (feature === 'rock_outcrop' || (terrain === 'rocky' && !feature)) {
+          feature = 'rock_outcrop';
+          resourceRemaining = NODE_RESOURCE_CAPACITY.ROCK_OUTCROP;
+          resourceMax = NODE_RESOURCE_CAPACITY.ROCK_OUTCROP;
+        } else if (feature === 'iron_seam') {
+          resourceRemaining = NODE_RESOURCE_CAPACITY.IRON_SEAM;
+          resourceMax = NODE_RESOURCE_CAPACITY.IRON_SEAM;
+        } else if (feature === 'coal_seam') {
+          resourceRemaining = NODE_RESOURCE_CAPACITY.COAL_SEAM;
+          resourceMax = NODE_RESOURCE_CAPACITY.COAL_SEAM;
+        } else if (feature === 'tree') {
+          resourceRemaining = NODE_RESOURCE_CAPACITY.TREE;
+          resourceMax = NODE_RESOURCE_CAPACITY.TREE;
+        }
+
+        grid.setTile(x, y, { terrain, feature, resourceRemaining, resourceMax });
       }
     }
 

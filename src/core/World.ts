@@ -61,12 +61,49 @@ export class World {
         this.grid.setTile(centerX + 2, centerY + dy, { road: true });
       }
 
+      // Seed guaranteed starter resource deposits nearby (20 units each)
+      // 1. Rock Quarry formation (~5 tiles SE)
+      const rockCoords = [
+        [centerX + 5, centerY + 3],
+        [centerX + 6, centerY + 3],
+        [centerX + 6, centerY + 4],
+      ];
+      for (const [rx, ry] of rockCoords) {
+        if (rx < this.grid.width && ry < this.grid.height) {
+          this.grid.setTile(rx, ry, { terrain: 'rocky', feature: 'rock_outcrop', resourceRemaining: 20, resourceMax: 20 });
+        }
+      }
+
+      // 2. Iron Ore Vein formation (~7 tiles NE)
+      const ironCoords = [
+        [centerX + 7, centerY - 3],
+        [centerX + 8, centerY - 3],
+        [centerX + 8, centerY - 4],
+      ];
+      for (const [ix, iy] of ironCoords) {
+        if (ix < this.grid.width && iy < this.grid.height && iy >= 0) {
+          this.grid.setTile(ix, iy, { terrain: 'rocky', feature: 'iron_seam', resourceRemaining: 20, resourceMax: 20 });
+        }
+      }
+
+      // 3. Coal Seam formation (~6 tiles SW)
+      const coalCoords = [
+        [centerX - 5, centerY + 4],
+        [centerX - 6, centerY + 4],
+        [centerX - 6, centerY + 5],
+      ];
+      for (const [cx, cy] of coalCoords) {
+        if (cx >= 0 && cy < this.grid.height) {
+          this.grid.setTile(cx, cy, { terrain: 'rocky', feature: 'coal_seam', resourceRemaining: 20, resourceMax: 20 });
+        }
+      }
+
       // Spawn initial settlers
       for (let i = 0; i < 4; i++) {
         this.spawnUnit('villager', centerX + (i % 2), centerY + Math.floor(i / 2));
       }
 
-      this.addNotification('Welcome to your new Settlement! Build a Sawmill and Quarry to begin your economy.', 'info');
+      this.addNotification('Welcome to your new Settlement! Build a Sawmill, Quarry, and Iron Mine to begin your economy.', 'info');
     }
   }
 
@@ -179,6 +216,7 @@ export class World {
         this.grid.setTile(gridX + dx, gridY + dy, {
           buildingId,
           bridge: defId === 'bridge' ? true : undefined,
+          road: defId === 'road' ? true : undefined,
           // If building on road or tree, remove tree
           feature: undefined,
         });
@@ -452,14 +490,24 @@ export class World {
         case 'deliver': {
           // Deposit carried resource
           if (unit.carry) {
+            if (this.store.isFull) {
+              this.addFloatingText('Storage Full! ⚠️', unit.gridX, unit.gridY, '#f97316');
+              unit.setState('idle');
+              break;
+            }
+
             const added = this.store.add(unit.carry.res, unit.carry.qty);
             if (added > 0) {
               this.addFloatingText(`+${added} ${unit.carry.res}`, unit.gridX, unit.gridY, '#81c784');
               globalAudio.play('deliver');
+              if (added >= unit.carry.qty) {
+                unit.setCarry(undefined);
+              } else {
+                unit.setCarry({ res: unit.carry.res, qty: unit.carry.qty - added });
+              }
             } else {
-              this.addFloatingText('Storage Full!', unit.gridX, unit.gridY, '#ffb74d');
+              this.addFloatingText('Storage Full! ⚠️', unit.gridX, unit.gridY, '#f97316');
             }
-            unit.setCarry(undefined);
           }
           unit.setState('idle');
           break;
@@ -583,18 +631,28 @@ export class World {
 
     // 4. Re-dispatch workers who are assigned to a building and currently idle
     for (const u of this.units) {
-      if (u.data.type === 'villager' && u.state === 'idle' && u.data.assignedBuildingId) {
-        const b = this.buildings.find((bld) => bld.id === u.data.assignedBuildingId);
-        if (b) {
-          if (!b.isConstructed) {
-            u.data.jobId = 'builder';
-            this.routeWorkerToBuilding(u, b);
-          } else {
-            this.dispatchWorkerJob(u);
+      if (u.data.type === 'villager' && u.state === 'idle') {
+        // If holding carried goods and storage has space, route to deliver
+        if (u.carry) {
+          if (!this.store.isFull) {
+            this.routeUnitToNearestStore(u);
           }
-        } else {
-          u.data.assignedBuildingId = undefined;
-          u.data.jobId = undefined;
+          continue;
+        }
+
+        if (u.data.assignedBuildingId) {
+          const b = this.buildings.find((bld) => bld.id === u.data.assignedBuildingId);
+          if (b) {
+            if (!b.isConstructed) {
+              u.data.jobId = 'builder';
+              this.routeWorkerToBuilding(u, b);
+            } else {
+              this.dispatchWorkerJob(u);
+            }
+          } else {
+            u.data.assignedBuildingId = undefined;
+            u.data.jobId = undefined;
+          }
         }
       }
     }
@@ -602,6 +660,13 @@ export class World {
     // 5. Default settler behavior: unassigned idle villagers actively chop timber to stock sawmill and gather materials
     for (const u of this.units) {
       if (u.data.type === 'villager' && u.state === 'idle' && !u.data.assignedBuildingId) {
+        if (u.carry) {
+          if (!this.store.isFull) {
+            this.routeUnitToNearestStore(u);
+          }
+          continue;
+        }
+
         // If unbuilt structures exist, become builder!
         const unbuiltBld = this.buildings.find((b) => !b.isConstructed && b.assignedWorkerIds.length < 2);
         if (unbuiltBld) {
@@ -612,16 +677,18 @@ export class World {
           continue;
         }
 
-        // Otherwise gather timber
-        const treeTile = this.findNearestFeatureTile(u.gridX, u.gridY, 'tree');
-        if (treeTile) {
-          u.data.jobId = 'lumberjack';
-          const path = this.pathfinder.findPath(u.gridX, u.gridY, treeTile[0], treeTile[1], true);
-          if (path && path.length > 0) {
-            u.data.targetX = treeTile[0];
-            u.data.targetY = treeTile[1];
-            u.setPath(path);
-            u.setState('move_to_source');
+        // Otherwise gather timber if storage has space
+        if (!this.store.isFull) {
+          const treeTile = this.findNearestFeatureTile(u.gridX, u.gridY, 'tree');
+          if (treeTile) {
+            u.data.jobId = 'lumberjack';
+            const path = this.pathfinder.findPath(u.gridX, u.gridY, treeTile[0], treeTile[1], true);
+            if (path && path.length > 0) {
+              u.data.targetX = treeTile[0];
+              u.data.targetY = treeTile[1];
+              u.setPath(path);
+              u.setState('move_to_source');
+            }
           }
         }
       }
@@ -734,6 +801,12 @@ export class World {
     const job = JOBS[jobId];
     if (!job) return;
 
+    // If storage is completely full and this job produces items for storage, wait idle
+    if (this.store.isFull && job.outputs.length > 0) {
+      worker.setState('idle');
+      return;
+    }
+
     // Check if worker needs to harvest from terrain (e.g. lumberjack, quarry stone miner, mine ores)
     const terrainInput = job.inputs.find((i) => i.from === 'terrain');
 
@@ -755,7 +828,7 @@ export class World {
         }
       }
 
-      // If no terrain target in reach, but stationed at a building (like Stone Quarry or Mine), work directly at the building!
+      // If no surface seam target reachable, but assigned to a mining/quarry facility, perform deep shaft extraction!
       if (worker.data.assignedBuildingId) {
         const bld = this.buildings.find((b) => b.id === worker.data.assignedBuildingId);
         if (bld && bld.isConstructed) {
@@ -896,16 +969,87 @@ export class World {
       // Randomly pick output if multiple (e.g. Weaponsmith sword or shield)
       const output = job.outputs[Math.floor(Math.random() * job.outputs.length)];
 
-      // If harvested tree, deplete the tree tile
-      if (job.id === 'lumberjack' && unit.data.targetX !== undefined && unit.data.targetY !== undefined) {
+      // Handle natural resource node depletion
+      if (unit.data.targetX !== undefined && unit.data.targetY !== undefined) {
         const targetTile = this.grid.getTile(unit.data.targetX, unit.data.targetY);
-        if (targetTile && targetTile.feature === 'tree') {
-          this.grid.setTile(unit.data.targetX, unit.data.targetY, { feature: undefined });
+        if (targetTile) {
+          if (job.id === 'stone_miner' && (targetTile.feature === 'rock_outcrop' || targetTile.terrain === 'rocky')) {
+            const current = targetTile.resourceRemaining ?? 20;
+            const remaining = Math.max(0, current - output.qty);
+            if (remaining <= 0) {
+              this.grid.setTile(unit.data.targetX, unit.data.targetY, {
+                feature: undefined,
+                terrain: 'grass',
+                resourceRemaining: 0,
+                resourceMax: 20,
+              });
+              this.addFloatingText('Rock Depleted! 🪨', unit.data.targetX, unit.data.targetY, '#f59e0b');
+              this.addNotification('A rock outcrop has been fully depleted.', 'info');
+            } else {
+              this.grid.setTile(unit.data.targetX, unit.data.targetY, {
+                resourceRemaining: remaining,
+              });
+            }
+          } else if (job.id === 'iron_miner' && targetTile.feature === 'iron_seam') {
+            const current = targetTile.resourceRemaining ?? 20;
+            const remaining = Math.max(0, current - output.qty);
+            if (remaining <= 0) {
+              this.grid.setTile(unit.data.targetX, unit.data.targetY, {
+                feature: undefined,
+                terrain: 'grass',
+                resourceRemaining: 0,
+                resourceMax: 20,
+              });
+              this.addFloatingText('Iron Seam Depleted! ⛏️', unit.data.targetX, unit.data.targetY, '#f59e0b');
+              this.addNotification('An iron ore seam has been fully depleted.', 'info');
+            } else {
+              this.grid.setTile(unit.data.targetX, unit.data.targetY, {
+                resourceRemaining: remaining,
+              });
+            }
+          } else if (job.id === 'coal_miner' && targetTile.feature === 'coal_seam') {
+            const current = targetTile.resourceRemaining ?? 20;
+            const remaining = Math.max(0, current - output.qty);
+            if (remaining <= 0) {
+              this.grid.setTile(unit.data.targetX, unit.data.targetY, {
+                feature: undefined,
+                terrain: 'grass',
+                resourceRemaining: 0,
+                resourceMax: 20,
+              });
+              this.addFloatingText('Coal Seam Depleted! ⛏️', unit.data.targetX, unit.data.targetY, '#f59e0b');
+              this.addNotification('A coal seam has been fully depleted.', 'info');
+            } else {
+              this.grid.setTile(unit.data.targetX, unit.data.targetY, {
+                resourceRemaining: remaining,
+              });
+            }
+          } else if (job.id === 'lumberjack' && targetTile.feature === 'tree') {
+            const current = targetTile.resourceRemaining ?? 4;
+            const remaining = Math.max(0, current - output.qty);
+            if (remaining <= 0) {
+              this.grid.setTile(unit.data.targetX, unit.data.targetY, {
+                feature: undefined,
+                resourceRemaining: 0,
+              });
+            } else {
+              this.grid.setTile(unit.data.targetX, unit.data.targetY, {
+                resourceRemaining: remaining,
+              });
+            }
+          }
         }
       }
 
       unit.setCarry({ res: output.res, qty: output.qty });
-      this.routeUnitToNearestStore(unit);
+
+      // If storage is full, remain idle holding the goods
+      if (this.store.isFull) {
+        this.addFloatingText('Storage Full! ⚠️', unit.gridX, unit.gridY, '#f97316');
+        unit.setState('idle');
+      } else {
+        this.routeUnitToNearestStore(unit);
+      }
     } else {
       unit.setState('idle');
     }
