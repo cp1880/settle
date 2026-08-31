@@ -5,6 +5,11 @@ export const TILE_HEIGHT = 64; // px
 export const GRID_SIZE_X = 100; // tiles
 export const GRID_SIZE_Y = 100; // tiles
 
+// Elevation Rendering Constants
+export const ELEVATION_ENABLED = true;
+export const ELEVATION_MAX_HEIGHT_PX = 80; // Maximum height offset in pixels (~1.25 tile heights for ridges)
+export const ELEVATION_MAX_GRADIENT_PX = 18; // Maximum vertical height step between adjacent grid vertices
+
 // Terrain movement costs for A* pathfinding
 export const TERRAIN_COSTS = {
   grass: 3,

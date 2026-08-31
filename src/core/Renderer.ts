@@ -5,12 +5,14 @@ import { isoToScreen } from '../iso';
 import { TILE_WIDTH, TILE_HEIGHT } from '../constants';
 import { getBuilding } from '../content/buildings';
 import { JOBS } from '../content/jobs';
+import { getUnitScreenPosition, getUnitClickBounds } from './unitUtils';
 
 export interface RenderOptions {
   selectedGridX?: number;
   selectedGridY?: number;
   selectedBuildingId?: string;
   selectedUnitId?: string;
+  hoveredUnitId?: string;
   selectedResourceNode?: { x: number; y: number } | null;
   buildPreview?: {
     defId: string;
@@ -62,16 +64,16 @@ export class Renderer {
 
     // 4. Draw Build Placement Preview Ghost (if in build mode)
     if (options.buildPreview) {
-      this.drawBuildPreview(options.buildPreview);
+      this.drawBuildPreview(options.buildPreview, world);
     }
 
     // 5. Draw Tile Selection Highlight
     if (options.selectedGridX !== undefined && options.selectedGridY !== undefined) {
-      this.drawSelectionHighlight(options.selectedGridX, options.selectedGridY);
+      this.drawSelectionHighlight(options.selectedGridX, options.selectedGridY, world);
     }
 
     // 6. Draw Floating Texts & Particles
-    this.drawFloatingTexts(world.floatingTexts);
+    this.drawFloatingTexts(world.floatingTexts, world);
 
     // 7. Ambient Lighting Tint
     if (options.timeOfDay && options.timeOfDay !== 'day') {
@@ -90,14 +92,14 @@ export class Renderer {
         const tile = grid.getTile(x, y);
         if (!tile) continue;
 
-        const screen = isoToScreen(x, y);
+        const corners = grid.getTileCorners(x, y);
 
-        // Draw diamond
+        // Draw diamond quadrilateral using the 4 elevated corners
         ctx.beginPath();
-        ctx.moveTo(screen.x, screen.y);
-        ctx.lineTo(screen.x + TILE_WIDTH / 2, screen.y + TILE_HEIGHT / 2);
-        ctx.lineTo(screen.x, screen.y + TILE_HEIGHT);
-        ctx.lineTo(screen.x - TILE_WIDTH / 2, screen.y + TILE_HEIGHT / 2);
+        ctx.moveTo(corners.top.x, corners.top.y);
+        ctx.lineTo(corners.right.x, corners.right.y);
+        ctx.lineTo(corners.bottom.x, corners.bottom.y);
+        ctx.lineTo(corners.left.x, corners.left.y);
         ctx.closePath();
 
         // Base tile fill
@@ -107,61 +109,93 @@ export class Renderer {
           ctx.fillStyle = wave > 0.3 ? '#2563eb' : wave > -0.3 ? '#1d4ed8' : '#1e40af';
           ctx.fill();
 
-          // Subtle shoreline foam
-          ctx.strokeStyle = 'rgba(147, 197, 253, 0.3)';
+          // Shoreline foam / shallow water highlight
+          ctx.strokeStyle = 'rgba(147, 197, 253, 0.35)';
           ctx.lineWidth = 1;
           ctx.stroke();
         } else {
-          // Land tile colors
+          // Dynamic land colors responding to elevation
+          const elevNorm = tile.elevation || 0.3;
+          const isAlt = (x + y) % 2 === 0;
+
           if (tile.terrain === 'grass') {
-            const check = (x + y) % 2 === 0;
-            ctx.fillStyle = check ? '#3b7a57' : '#336a4b';
+            if (elevNorm > 0.52) {
+              // Sunny highland grass
+              ctx.fillStyle = isAlt ? '#7cb322' : '#6ea31b';
+            } else if (elevNorm > 0.28) {
+              // Rolling midland plains
+              ctx.fillStyle = isAlt ? '#5c9622' : '#52871c';
+            } else {
+              // Lush lowland valley
+              ctx.fillStyle = isAlt ? '#457a1e' : '#3d6e18';
+            }
           } else if (tile.terrain === 'forest') {
-            ctx.fillStyle = '#245237';
+            if (elevNorm > 0.52) {
+              ctx.fillStyle = isAlt ? '#2d6a4f' : '#245a42';
+            } else {
+              ctx.fillStyle = isAlt ? '#1b4332' : '#143628';
+            }
           } else if (tile.terrain === 'rocky') {
-            ctx.fillStyle = '#6b7280';
+            if (elevNorm > 0.72) {
+              // Granite mountain peak
+              ctx.fillStyle = isAlt ? '#94a3b8' : '#64748b';
+            } else {
+              // Rocky highland slope
+              ctx.fillStyle = isAlt ? '#64748b' : '#475569';
+            }
           }
           ctx.fill();
 
-          // Subtle tile grid gridlines
-          ctx.strokeStyle = 'rgba(0, 0, 0, 0.12)';
+          // 3D Slope directional relief lighting (Sunlight from North-West / Top-Left)
+          const slope = grid.getTileSlopeFactor(x, y);
+          if (slope > 0.04) {
+            // Lit slope facing sun
+            ctx.fillStyle = `rgba(255, 255, 255, ${Math.min(0.35, slope * 0.32)})`;
+            ctx.fill();
+          } else if (slope < -0.04) {
+            // Shaded slope in shadow
+            ctx.fillStyle = `rgba(0, 0, 0, ${Math.min(0.40, -slope * 0.36)})`;
+            ctx.fill();
+          }
+
+          // Subtle tile gridlines
+          ctx.strokeStyle = 'rgba(0, 0, 0, 0.14)';
           ctx.lineWidth = 1;
           ctx.stroke();
         }
 
         // Draw road overlay
         if (tile.road) {
-          this.drawRoadTile(x, y, screen.x, screen.y);
+          this.drawRoadTile(x, y, corners);
         }
       }
     }
   }
 
-  private drawRoadTile(gx: number, gy: number, sx: number, sy: number): void {
+  private drawRoadTile(
+    gx: number,
+    gy: number,
+    corners: {
+      top: { x: number; y: number };
+      right: { x: number; y: number };
+      bottom: { x: number; y: number };
+      left: { x: number; y: number };
+    }
+  ): void {
     const ctx = this.ctx;
-    const halfW = TILE_WIDTH / 2;
-    const halfH = TILE_HEIGHT / 2;
-
-    const topX = sx;
-    const topY = sy;
-    const rightX = sx + halfW;
-    const rightY = sy + halfH;
-    const bottomX = sx;
-    const bottomY = sy + TILE_HEIGHT;
-    const leftX = sx - halfW;
-    const leftY = sy + halfH;
+    const { top, right, bottom, left } = corners;
 
     ctx.save();
 
     // 1. Full diamond paved slab base
     ctx.beginPath();
-    ctx.moveTo(topX, topY);
-    ctx.lineTo(rightX, rightY);
-    ctx.lineTo(bottomX, bottomY);
-    ctx.lineTo(leftX, leftY);
+    ctx.moveTo(top.x, top.y);
+    ctx.lineTo(right.x, right.y);
+    ctx.lineTo(bottom.x, bottom.y);
+    ctx.lineTo(left.x, left.y);
     ctx.closePath();
 
-    // Clean light grey slate paver base (matches the light grey stone tiles around the Town Hall)
+    // Clean light grey slate paver base
     const isAlt = (gx + gy) % 2 === 0;
     ctx.fillStyle = isAlt ? '#cbd5e1' : '#94a3b8';
     ctx.fill();
@@ -177,27 +211,27 @@ export class Renderer {
 
     // NW-SE diagonal divider
     ctx.beginPath();
-    ctx.moveTo(topX, topY);
-    ctx.lineTo(bottomX, bottomY);
-    ctx.moveTo(leftX, leftY);
-    ctx.lineTo(rightX, rightY);
+    ctx.moveTo(top.x, top.y);
+    ctx.lineTo(bottom.x, bottom.y);
+    ctx.moveTo(left.x, left.y);
+    ctx.lineTo(right.x, right.y);
     ctx.stroke();
 
     // Secondary paving slab sub-divisions
     ctx.beginPath();
-    ctx.moveTo((topX + leftX) / 2, (topY + leftY) / 2);
-    ctx.lineTo((bottomX + rightX) / 2, (bottomY + rightY) / 2);
-    ctx.moveTo((topX + rightX) / 2, (topY + rightY) / 2);
-    ctx.lineTo((bottomX + leftX) / 2, (bottomY + leftY) / 2);
+    ctx.moveTo((top.x + left.x) / 2, (top.y + left.y) / 2);
+    ctx.lineTo((bottom.x + right.x) / 2, (bottom.y + right.y) / 2);
+    ctx.moveTo((top.x + right.x) / 2, (top.y + right.y) / 2);
+    ctx.lineTo((bottom.x + left.x) / 2, (bottom.y + left.y) / 2);
     ctx.stroke();
 
     // 3. Crisp white stone top bevel highlight
     ctx.strokeStyle = 'rgba(255, 255, 255, 0.75)';
     ctx.lineWidth = 1.2;
     ctx.beginPath();
-    ctx.moveTo(leftX, leftY);
-    ctx.lineTo(topX, topY);
-    ctx.lineTo(rightX, rightY);
+    ctx.moveTo(left.x, left.y);
+    ctx.lineTo(top.x, top.y);
+    ctx.lineTo(right.x, right.y);
     ctx.stroke();
 
     ctx.restore();
@@ -264,11 +298,16 @@ export class Renderer {
         const isSelected =
           options.selectedResourceNode?.x === item.data.x &&
           options.selectedResourceNode?.y === item.data.y;
-        this.drawFeature(item.data.x, item.data.y, item.data.feature, item.data.terrain, isSelected);
+        this.drawFeature(item.data.x, item.data.y, item.data.feature, item.data.terrain, isSelected, world);
       } else if (item.type === 'building') {
         this.drawBuilding(item.data, options.selectedBuildingId === item.data.id, world);
       } else if (item.type === 'unit') {
-        this.drawUnit(item.data, options.selectedUnitId === item.data.id);
+        this.drawUnit(
+          item.data,
+          options.selectedUnitId === item.data.id,
+          options.hoveredUnitId === item.data.id,
+          world
+        );
       }
     }
   }
@@ -278,12 +317,13 @@ export class Renderer {
     gy: number,
     feature: string | undefined,
     terrain: string,
-    isSelected?: boolean
+    isSelected?: boolean,
+    world?: World
   ): void {
     const ctx = this.ctx;
-    const screen = isoToScreen(gx, gy);
-    const centerX = screen.x;
-    const centerY = screen.y + TILE_HEIGHT / 2;
+    const center = world ? world.grid.getTileCenterScreen(gx, gy) : { x: isoToScreen(gx, gy).x, y: isoToScreen(gx, gy).y + TILE_HEIGHT / 2 };
+    const centerX = center.x;
+    const centerY = center.y;
 
     // Selection ring if clicked
     if (isSelected) {
@@ -490,13 +530,15 @@ export class Renderer {
     const def = getBuilding(bld.defId);
     if (!def) return;
 
-    const screen = isoToScreen(bld.x, bld.y);
     const sizeW = def.size.w;
     const sizeH = def.size.h;
 
-    // Building ground center
-    const centerX = screen.x;
-    const centerY = screen.y + ((sizeW + sizeH) * TILE_HEIGHT) / 4;
+    // Building ground center with elevation applied
+    const center = world
+      ? world.grid.getBuildingCenterScreen(bld.x, bld.y, sizeW, sizeH)
+      : { x: isoToScreen(bld.x, bld.y).x, y: isoToScreen(bld.x, bld.y).y + ((sizeW + sizeH) * TILE_HEIGHT) / 4 };
+    const centerX = center.x;
+    const centerY = center.y;
 
     ctx.save();
 
@@ -553,7 +595,9 @@ export class Renderer {
         this.drawGateArt(centerX, centerY);
         break;
       case 'road':
-        this.drawRoadTile(bld.x, bld.y, screen.x, screen.y);
+        if (world) {
+          this.drawRoadTile(bld.x, bld.y, world.grid.getTileCorners(bld.x, bld.y));
+        }
         break;
       case 'turret':
         this.drawTurretArt(centerX, centerY);
@@ -1356,14 +1400,79 @@ export class Renderer {
     ctx.fillText(name, cx, cy - 10);
   }
 
-  private drawUnit(unit: Unit, isSelected: boolean): void {
+  private drawUnit(unit: Unit, isSelected: boolean, isHovered: boolean = false, world?: World): void {
     const ctx = this.ctx;
-    const screen = isoToScreen(unit.x, unit.y);
-    const cx = screen.x;
-    const cy = screen.y + TILE_HEIGHT / 2;
 
-    const isMoving = unit.state.startsWith('move');
+    const { cx, cy } = getUnitScreenPosition(unit, world);
+    const isMoving = unit.state.startsWith('move') || unit.state === 'deliver' || (unit.data.path && unit.data.path.length > 0);
     const walkBounce = isMoving ? Math.abs(Math.sin(this.animTimeMs / 120)) * 4 : 0;
+
+    // 1. Clickable Area Faint Box & Tooltip on Hover
+    if (isHovered && world) {
+      const bounds = getUnitClickBounds(unit, world);
+      ctx.save();
+
+      // Faint rounded rectangle representing the individual settler's clickable area
+      const r = 5;
+      ctx.beginPath();
+      ctx.moveTo(bounds.x + r, bounds.y);
+      ctx.lineTo(bounds.x + bounds.width - r, bounds.y);
+      ctx.quadraticCurveTo(bounds.x + bounds.width, bounds.y, bounds.x + bounds.width, bounds.y + r);
+      ctx.lineTo(bounds.x + bounds.width, bounds.y + bounds.height - r);
+      ctx.quadraticCurveTo(bounds.x + bounds.width, bounds.y + bounds.height, bounds.x + bounds.width - r, bounds.y + bounds.height);
+      ctx.lineTo(bounds.x + r, bounds.y + bounds.height);
+      ctx.quadraticCurveTo(bounds.x, bounds.y + bounds.height, bounds.x, bounds.y + bounds.height - r);
+      ctx.lineTo(bounds.x, bounds.y + r);
+      ctx.quadraticCurveTo(bounds.x, bounds.y, bounds.x + r, bounds.y);
+      ctx.closePath();
+
+      // Soft glowing fill and crisp border
+      ctx.fillStyle = 'rgba(56, 189, 248, 0.14)';
+      ctx.fill();
+      ctx.strokeStyle = 'rgba(56, 189, 248, 0.85)';
+      ctx.lineWidth = 1.5;
+      ctx.stroke();
+
+      // Floating hover badge with settler name & job above the clickable box
+      const jobDef = unit.data.jobId ? JOBS[unit.data.jobId] : null;
+      const roleText = jobDef ? jobDef.name : unit.data.type === 'soldier' ? 'Guard' : 'Villager';
+      const labelText = `${unit.data.name} • ${roleText}`;
+
+      ctx.font = 'bold 9px system-ui, -apple-system, sans-serif';
+      const textMetrics = ctx.measureText(labelText);
+      const tagW = Math.max(36, textMetrics.width + 12);
+      const tagH = 16;
+      const tagX = cx - tagW / 2;
+      const tagY = bounds.y - tagH - 3;
+
+      // Dark badge pill background
+      ctx.fillStyle = 'rgba(15, 23, 42, 0.92)';
+      ctx.strokeStyle = 'rgba(56, 189, 248, 0.6)';
+      ctx.lineWidth = 1;
+
+      const pr = 4;
+      ctx.beginPath();
+      ctx.moveTo(tagX + pr, tagY);
+      ctx.lineTo(tagX + tagW - pr, tagY);
+      ctx.quadraticCurveTo(tagX + tagW, tagY, tagX + tagW, tagY + pr);
+      ctx.lineTo(tagX + tagW, tagY + tagH - pr);
+      ctx.quadraticCurveTo(tagX + tagW, tagY + tagH, tagX + tagW - pr, tagY + tagH);
+      ctx.lineTo(tagX + pr, tagY + tagH);
+      ctx.quadraticCurveTo(tagX, tagY + tagH, tagX, tagY + tagH - pr);
+      ctx.lineTo(tagX, tagY + pr);
+      ctx.quadraticCurveTo(tagX, tagY, tagX + pr, tagY);
+      ctx.closePath();
+      ctx.fill();
+      ctx.stroke();
+
+      // Badge text
+      ctx.fillStyle = '#f8fafc';
+      ctx.textAlign = 'center';
+      ctx.textBaseline = 'middle';
+      ctx.fillText(labelText, cx, tagY + tagH / 2 + 0.5);
+
+      ctx.restore();
+    }
 
     // Unit Ground Shadow
     ctx.beginPath();
@@ -1451,19 +1560,32 @@ export class Renderer {
     }
   }
 
-  private drawBuildPreview(preview: { defId: string; gridX: number; gridY: number; isValid: boolean }): void {
+  private drawBuildPreview(
+    preview: { defId: string; gridX: number; gridY: number; isValid: boolean },
+    world?: World
+  ): void {
     const ctx = this.ctx;
     const def = getBuilding(preview.defId);
     if (!def) return;
 
     for (let dy = 0; dy < def.size.h; dy++) {
       for (let dx = 0; dx < def.size.w; dx++) {
-        const screen = isoToScreen(preview.gridX + dx, preview.gridY + dy);
+        const gx = preview.gridX + dx;
+        const gy = preview.gridY + dy;
+        const corners = world
+          ? world.grid.getTileCorners(gx, gy)
+          : {
+              top: isoToScreen(gx, gy),
+              right: { x: isoToScreen(gx, gy).x + TILE_WIDTH / 2, y: isoToScreen(gx, gy).y + TILE_HEIGHT / 2 },
+              bottom: { x: isoToScreen(gx, gy).x, y: isoToScreen(gx, gy).y + TILE_HEIGHT },
+              left: { x: isoToScreen(gx, gy).x - TILE_WIDTH / 2, y: isoToScreen(gx, gy).y + TILE_HEIGHT / 2 },
+            };
+
         ctx.beginPath();
-        ctx.moveTo(screen.x, screen.y);
-        ctx.lineTo(screen.x + TILE_WIDTH / 2, screen.y + TILE_HEIGHT / 2);
-        ctx.lineTo(screen.x, screen.y + TILE_HEIGHT);
-        ctx.lineTo(screen.x - TILE_WIDTH / 2, screen.y + TILE_HEIGHT / 2);
+        ctx.moveTo(corners.top.x, corners.top.y);
+        ctx.lineTo(corners.right.x, corners.right.y);
+        ctx.lineTo(corners.bottom.x, corners.bottom.y);
+        ctx.lineTo(corners.left.x, corners.left.y);
         ctx.closePath();
 
         ctx.fillStyle = preview.isValid ? 'rgba(74, 222, 128, 0.45)' : 'rgba(239, 68, 68, 0.45)';
@@ -1475,15 +1597,22 @@ export class Renderer {
     }
   }
 
-  private drawSelectionHighlight(gx: number, gy: number): void {
+  private drawSelectionHighlight(gx: number, gy: number, world?: World): void {
     const ctx = this.ctx;
-    const screen = isoToScreen(gx, gy);
+    const corners = world
+      ? world.grid.getTileCorners(gx, gy)
+      : {
+          top: isoToScreen(gx, gy),
+          right: { x: isoToScreen(gx, gy).x + TILE_WIDTH / 2, y: isoToScreen(gx, gy).y + TILE_HEIGHT / 2 },
+          bottom: { x: isoToScreen(gx, gy).x, y: isoToScreen(gx, gy).y + TILE_HEIGHT },
+          left: { x: isoToScreen(gx, gy).x - TILE_WIDTH / 2, y: isoToScreen(gx, gy).y + TILE_HEIGHT / 2 },
+        };
 
     ctx.beginPath();
-    ctx.moveTo(screen.x, screen.y);
-    ctx.lineTo(screen.x + TILE_WIDTH / 2, screen.y + TILE_HEIGHT / 2);
-    ctx.lineTo(screen.x, screen.y + TILE_HEIGHT);
-    ctx.lineTo(screen.x - TILE_WIDTH / 2, screen.y + TILE_HEIGHT / 2);
+    ctx.moveTo(corners.top.x, corners.top.y);
+    ctx.lineTo(corners.right.x, corners.right.y);
+    ctx.lineTo(corners.bottom.x, corners.bottom.y);
+    ctx.lineTo(corners.left.x, corners.left.y);
     ctx.closePath();
 
     ctx.strokeStyle = '#38bdf8';
@@ -1493,10 +1622,12 @@ export class Renderer {
     ctx.setLineDash([]);
   }
 
-  private drawFloatingTexts(texts: FloatingText[]): void {
+  private drawFloatingTexts(texts: FloatingText[], world?: World): void {
     const ctx = this.ctx;
     for (const ft of texts) {
-      const screen = isoToScreen(ft.gridX, ft.gridY);
+      const center = world
+        ? world.grid.getTileCenterScreen(ft.gridX, ft.gridY)
+        : { x: isoToScreen(ft.gridX, ft.gridY).x, y: isoToScreen(ft.gridX, ft.gridY).y + TILE_HEIGHT / 2 };
       const floatUp = (ft.elapsedMs / ft.durationMs) * 35;
       const alpha = 1 - ft.elapsedMs / ft.durationMs;
 
@@ -1507,7 +1638,7 @@ export class Renderer {
       ctx.textAlign = 'center';
       ctx.shadowColor = '#000000';
       ctx.shadowBlur = 4;
-      ctx.fillText(ft.text, screen.x, screen.y + TILE_HEIGHT / 2 - 10 - floatUp);
+      ctx.fillText(ft.text, center.x, center.y - 10 - floatUp);
       ctx.restore();
     }
   }

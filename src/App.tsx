@@ -14,7 +14,8 @@ import { Unit } from './core/Unit';
 import { GameSpeed, BuildingInstance } from './types';
 import { getGridTileAtScreen, isoToScreen } from './iso';
 import { BUILDINGS, getBuilding } from './content/buildings';
-import { GRID_SIZE_X, GRID_SIZE_Y } from './constants';
+import { GRID_SIZE_X, GRID_SIZE_Y, TILE_WIDTH, TILE_HEIGHT } from './constants';
+import { getUnitAtScreenPos, getUnitScreenPosition } from './core/unitUtils';
 import { HUD } from './ui/HUD';
 import { BuildMenu } from './ui/BuildMenu';
 import { BuildingInspector } from './ui/BuildingInspector';
@@ -72,6 +73,7 @@ export default function App() {
   const cameraAtDragStartRef = useRef<{ x: number; y: number }>({ x: 0, y: 0 });
   const touchDistanceRef = useRef<number | null>(null);
   const hasMovedSignificantlyRef = useRef(false);
+  const hoveredUnitIdRef = useRef<string | null>(null);
 
   // Initialize and validate content on mount
   useEffect(() => {
@@ -89,7 +91,7 @@ export default function App() {
     // Center camera on the Town Hall in world coordinates
     const thCenterX = Math.floor(customGrid.width / 2);
     const thCenterY = Math.floor(customGrid.height / 2);
-    const thIso = isoToScreen(thCenterX, thCenterY);
+    const thIso = customGrid.getBuildingCenterScreen(thCenterX - 2, thCenterY - 2, 4, 4);
     cameraRef.current = { x: thIso.x, y: thIso.y, zoom: 1.0 };
 
     setIsMainMenuOpen(false);
@@ -174,6 +176,7 @@ export default function App() {
             selectedGridY: selectedGridTile?.y,
             selectedBuildingId: selectedBuilding?.id,
             selectedUnitId: selectedUnitId || undefined,
+            hoveredUnitId: hoveredUnitIdRef.current || undefined,
             selectedResourceNode,
             buildPreview,
             roadToolActive,
@@ -204,18 +207,22 @@ export default function App() {
 
   // Camera Centering Helpers
   const centerCameraOnUnit = useCallback((unit: Unit) => {
-    const iso = isoToScreen(unit.gridX, unit.gridY);
-    cameraRef.current.x = iso.x;
-    cameraRef.current.y = iso.y;
+    const world = worldRef.current;
+    const pos = getUnitScreenPosition(unit, world || undefined);
+    cameraRef.current.x = pos.cx;
+    cameraRef.current.y = pos.cy;
   }, []);
 
   const centerCameraOnBuilding = useCallback((bld: BuildingInstance) => {
+    const world = worldRef.current;
     const def = getBuilding(bld.defId);
-    const cx = bld.x + (def ? def.size.w / 2 : 1);
-    const cy = bld.y + (def ? def.size.h / 2 : 1);
-    const iso = isoToScreen(cx, cy);
-    cameraRef.current.x = iso.x;
-    cameraRef.current.y = iso.y;
+    const w = def ? def.size.w : 1;
+    const h = def ? def.size.h : 1;
+    const pos = world
+      ? world.grid.getBuildingCenterScreen(bld.x, bld.y, w, h)
+      : isoToScreen(bld.x + w / 2, bld.y + h / 2);
+    cameraRef.current.x = pos.x;
+    cameraRef.current.y = pos.y;
   }, []);
 
   // Unit & Building Selection Cyclers
@@ -360,32 +367,54 @@ export default function App() {
       cameraRef.current.y = cameraAtDragStartRef.current.y - dy / cameraRef.current.zoom;
     }
 
-    // Update hovered grid tile
+    // Convert client coords back into world coords
     const rect = canvas.getBoundingClientRect();
     const clientX = e.clientX - rect.left;
     const clientY = e.clientY - rect.top;
-
-    // Convert client coords back into world coords
     const worldX = (clientX - canvas.width / 2) / cameraRef.current.zoom + cameraRef.current.x;
     const worldY = (clientY - canvas.height / 2) / cameraRef.current.zoom + cameraRef.current.y;
 
-    const tile = getGridTileAtScreen(worldX, worldY);
     const world = worldRef.current;
-    if (world && tile.gridX >= 0 && tile.gridX < world.grid.width && tile.gridY >= 0 && tile.gridY < world.grid.height) {
-      setSelectedGridTile({ x: tile.gridX, y: tile.gridY });
+    if (world) {
+      // 1. Check unit hover box for individual settler detection
+      const hoveredUnit = getUnitAtScreenPos(worldX, worldY, world);
+      hoveredUnitIdRef.current = hoveredUnit ? hoveredUnit.id : null;
+
+      // Update cursor feedback
+      if (hoveredUnit && !selectedDefId && !roadToolActive && !demolishToolActive) {
+        canvas.style.cursor = 'pointer';
+      } else if (selectedDefId || roadToolActive || demolishToolActive) {
+        canvas.style.cursor = 'crosshair';
+      } else {
+        canvas.style.cursor = 'default';
+      }
+
+      // 2. Update hovered grid tile
+      const elevationGetter = (gx: number, gy: number) => world.grid.getTileCorners(gx, gy);
+      const tile = getGridTileAtScreen(worldX, worldY, TILE_WIDTH, TILE_HEIGHT, elevationGetter);
+      if (tile.gridX >= 0 && tile.gridX < world.grid.width && tile.gridY >= 0 && tile.gridY < world.grid.height) {
+        setSelectedGridTile({ x: tile.gridX, y: tile.gridY });
+      }
     }
   };
 
   const handlePointerUp = (e: React.PointerEvent<HTMLCanvasElement>) => {
     isDraggingRef.current = false;
+    const canvas = canvasRef.current;
 
     // If it was a click (not a pan drag)
-    if (!hasMovedSignificantlyRef.current && selectedGridTile && worldRef.current) {
+    if (!hasMovedSignificantlyRef.current && worldRef.current && canvas) {
       const world = worldRef.current;
-      const { x: gx, y: gy } = selectedGridTile;
+      const rect = canvas.getBoundingClientRect();
+      const clientX = e.clientX - rect.left;
+      const clientY = e.clientY - rect.top;
+      const worldX = (clientX - canvas.width / 2) / cameraRef.current.zoom + cameraRef.current.x;
+      const worldY = (clientY - canvas.height / 2) / cameraRef.current.zoom + cameraRef.current.y;
+
+      const { x: gx, y: gy } = selectedGridTile || { x: -1, y: -1 };
 
       // 1. If Placing a Building
-      if (selectedDefId) {
+      if (selectedDefId && gx >= 0 && gy >= 0) {
         const placed = world.placeBuilding(selectedDefId, gx, gy);
         if (placed) {
           // If placement successful, deselect building
@@ -397,18 +426,30 @@ export default function App() {
       }
 
       // 2. If Placing Road
-      if (roadToolActive) {
+      if (roadToolActive && gx >= 0 && gy >= 0) {
         world.placeRoad(gx, gy);
         return;
       }
 
       // 3. If Demolishing
-      if (demolishToolActive) {
+      if (demolishToolActive && gx >= 0 && gy >= 0) {
         world.demolish(gx, gy);
         return;
       }
 
-      // 4. Default: Inspect clicked building or unit
+      // 4. Settler / Unit Click Target (Individual settler clickable bounding box)
+      const clickedUnit = getUnitAtScreenPos(worldX, worldY, world);
+      if (clickedUnit) {
+        setSelectedUnitId(clickedUnit.id);
+        setSelectedBuilding(null);
+        setSelectedResourceNode(null);
+        globalAudio.play('click');
+        return;
+      }
+
+      if (gx < 0 || gy < 0) return;
+
+      // 5. Default: Inspect clicked building
       const tile = world.grid.getTile(gx, gy);
       if (tile?.buildingId) {
         const bld = world.buildings.find((b) => b.id === tile.buildingId);
@@ -421,18 +462,7 @@ export default function App() {
         }
       }
 
-      // Check unit on or near tile
-      const clickedUnit = world.units.find((u) => Math.abs(u.gridX - gx) <= 0.9 && Math.abs(u.gridY - gy) <= 0.9) ||
-                          world.units.find((u) => u.gridX === gx && u.gridY === gy);
-      if (clickedUnit) {
-        setSelectedUnitId(clickedUnit.id);
-        setSelectedBuilding(null);
-        setSelectedResourceNode(null);
-        globalAudio.play('click');
-        return;
-      }
-
-      // Check natural resource feature (rocks, iron ore, coal, trees)
+      // 6. Natural resource feature (rocks, iron ore, coal, trees)
       if (tile && (tile.feature || tile.terrain === 'rocky')) {
         const feature = tile.feature || (tile.terrain === 'rocky' ? 'rock_outcrop' : undefined);
         setSelectedResourceNode({

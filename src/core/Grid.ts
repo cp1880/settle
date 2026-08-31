@@ -1,5 +1,14 @@
 import { TileData, TerrainType, FeatureType } from '../types';
-import { TERRAIN_COSTS, ROAD_COST } from '../constants';
+import {
+  TERRAIN_COSTS,
+  ROAD_COST,
+  TILE_WIDTH,
+  TILE_HEIGHT,
+  ELEVATION_ENABLED,
+  ELEVATION_MAX_HEIGHT_PX,
+  ELEVATION_MAX_GRADIENT_PX,
+} from '../constants';
+import { isoToScreen } from '../iso';
 
 // ============================================================================
 // MAP GENERATION CONSTANTS & RESOURCE BALANCING
@@ -93,13 +102,16 @@ export class Grid {
   public readonly width: number;
   public readonly height: number;
   private tiles: TileData[][];
+  public vertexElevations: Float32Array;
 
   constructor(width: number, height: number, initialTiles?: TileData[][]) {
     this.width = width;
     this.height = height;
+    this.vertexElevations = new Float32Array((width + 1) * (height + 1));
 
     if (initialTiles && initialTiles.length === height && initialTiles[0]?.length === width) {
       this.tiles = initialTiles;
+      this.computeVertexElevationsFromTiles();
     } else {
       this.tiles = [];
       for (let y = 0; y < height; y++) {
@@ -110,6 +122,277 @@ export class Grid {
         this.tiles.push(row);
       }
     }
+  }
+
+  getVertexElevation(vx: number, vy: number): number {
+    if (!ELEVATION_ENABLED) return 0;
+    if (vx < 0) vx = 0;
+    if (vx > this.width) vx = this.width;
+    if (vy < 0) vy = 0;
+    if (vy > this.height) vy = this.height;
+    return this.vertexElevations[vy * (this.width + 1) + vx] || 0;
+  }
+
+  setVertexElevation(vx: number, vy: number, val: number): void {
+    if (vx >= 0 && vx <= this.width && vy >= 0 && vy <= this.height) {
+      this.vertexElevations[vy * (this.width + 1) + vx] = val;
+    }
+  }
+
+  /**
+   * Checks if a grid vertex touches any water tile.
+   */
+  isWaterVertex(vx: number, vy: number): boolean {
+    for (let dy = -1; dy <= 0; dy++) {
+      for (let dx = -1; dx <= 0; dx++) {
+        const t = this.getTile(vx + dx, vy + dy);
+        if (t && t.terrain === 'water') {
+          return true;
+        }
+      }
+    }
+    return false;
+  }
+
+  /**
+   * Returns the 4 screen coordinate corners of tile (x, y) with vertex elevation applied.
+   * Water tiles are guaranteed to be completely level at base height 0.
+   */
+  getTileCorners(x: number, y: number): {
+    top: { x: number; y: number };
+    right: { x: number; y: number };
+    bottom: { x: number; y: number };
+    left: { x: number; y: number };
+  } {
+    const tile = this.getTile(x, y);
+    if (tile && tile.terrain === 'water') {
+      return {
+        top: isoToScreen(x, y, 0),
+        right: isoToScreen(x + 1, y, 0),
+        bottom: isoToScreen(x + 1, y + 1, 0),
+        left: isoToScreen(x, y + 1, 0),
+      };
+    }
+
+    const hTop = this.getVertexElevation(x, y);
+    const hRight = this.getVertexElevation(x + 1, y);
+    const hBottom = this.getVertexElevation(x + 1, y + 1);
+    const hLeft = this.getVertexElevation(x, y + 1);
+
+    const top = isoToScreen(x, y, hTop);
+    const right = isoToScreen(x + 1, y, hRight);
+    const bottom = isoToScreen(x + 1, y + 1, hBottom);
+    const left = isoToScreen(x, y + 1, hLeft);
+
+    return { top, right, bottom, left };
+  }
+
+  /**
+   * Returns the screen position of the center of tile (x, y).
+   */
+  getTileCenterScreen(x: number, y: number): { x: number; y: number } {
+    const corners = this.getTileCorners(x, y);
+    return {
+      x: (corners.top.x + corners.bottom.x) / 2,
+      y: (corners.top.y + corners.right.y + corners.bottom.y + corners.left.y) / 4,
+    };
+  }
+
+  /**
+   * Returns the screen position for continuous grid coordinates (gx, gy),
+   * bilinearly interpolating elevation across the 4 corners of the containing tile.
+   */
+  getContinuousScreenPos(gx: number, gy: number): { x: number; y: number } {
+    if (!ELEVATION_ENABLED) {
+      return isoToScreen(gx, gy, 0);
+    }
+
+    const tx = Math.floor(gx);
+    const ty = Math.floor(gy);
+    const fx = Math.max(0, Math.min(1, gx - tx));
+    const fy = Math.max(0, Math.min(1, gy - ty));
+
+    const h00 = this.getVertexElevation(tx, ty);
+    const h10 = this.getVertexElevation(tx + 1, ty);
+    const h01 = this.getVertexElevation(tx, ty + 1);
+    const h11 = this.getVertexElevation(tx + 1, ty + 1);
+
+    const hTop = h00 * (1 - fx) + h10 * fx;
+    const hBot = h01 * (1 - fx) + h11 * fx;
+    const h = hTop * (1 - fy) + hBot * fy;
+
+    return isoToScreen(gx, gy, h);
+  }
+
+  /**
+   * Returns the ground center screen position for a building of size w * h.
+   */
+  getBuildingCenterScreen(bx: number, by: number, bw: number, bh: number): { x: number; y: number } {
+    let sumH = 0;
+    let count = 0;
+    for (let dy = 0; dy <= bh; dy++) {
+      for (let dx = 0; dx <= bw; dx++) {
+        sumH += this.getVertexElevation(bx + dx, by + dy);
+        count++;
+      }
+    }
+    const avgH = count > 0 ? sumH / count : 0;
+    const cx = bx + bw / 2;
+    const cy = by + bh / 2;
+    return isoToScreen(cx, cy, avgH);
+  }
+
+  /**
+   * Calculates a lighting / shading factor based on 3D terrain slope facing top-left sunlight.
+   * Returns a value between -1 (facing away/in shadow) and +1 (facing sun/brightened).
+   * Water tiles are flat and return 0.
+   */
+  getTileSlopeFactor(x: number, y: number): number {
+    if (!ELEVATION_ENABLED) return 0;
+    const tile = this.getTile(x, y);
+    if (tile && tile.terrain === 'water') return 0;
+
+    const hTop = this.getVertexElevation(x, y);
+    const hRight = this.getVertexElevation(x + 1, y);
+    const hBottom = this.getVertexElevation(x + 1, y + 1);
+    const hLeft = this.getVertexElevation(x, y + 1);
+
+    // In 2:1 isometric projection:
+    // Screen top is (x, y), Screen right is (x+1, y), Screen bottom is (x+1, y+1), Screen left is (x, y+1).
+    // Sunlight comes from top-left (North-West in world / screen space).
+    // Slope along North-South diagonal (top to bottom):
+    const dNorthSouth = (hTop + hLeft) - (hBottom + hRight);
+    // Slope along West-East diagonal (left to right):
+    const dWestEast = (hTop + hRight) - (hBottom + hLeft);
+
+    const slope = (dNorthSouth + dWestEast) / (2 * Math.max(1, ELEVATION_MAX_GRADIENT_PX));
+    return Math.max(-1, Math.min(1, slope));
+  }
+
+  /**
+   * Enforces that no adjacent vertices have a vertical step larger than maxGradient.
+   * Water vertices are strictly pinned to 0 so all water bodies remain perfectly level.
+   */
+  enforceMaxGradient(maxGradient: number = ELEVATION_MAX_GRADIENT_PX): void {
+    const w = this.width;
+    const h = this.height;
+
+    // Identify all water-touching vertices to keep them pinned strictly at 0
+    const isWater = new Uint8Array((w + 1) * (h + 1));
+    for (let vy = 0; vy <= h; vy++) {
+      for (let vx = 0; vx <= w; vx++) {
+        if (this.isWaterVertex(vx, vy)) {
+          isWater[vy * (w + 1) + vx] = 1;
+          this.vertexElevations[vy * (w + 1) + vx] = 0;
+        }
+      }
+    }
+
+    // Bidirectional multi-pass gradient relaxation
+    for (let pass = 0; pass < 6; pass++) {
+      // Forward pass
+      for (let vy = 0; vy <= h; vy++) {
+        for (let vx = 0; vx <= w; vx++) {
+          const idx = vy * (w + 1) + vx;
+          const cur = this.vertexElevations[idx];
+
+          if (vx < w) {
+            const rIdx = vy * (w + 1) + (vx + 1);
+            if (!isWater[rIdx] && this.vertexElevations[rIdx] > cur + maxGradient) {
+              this.vertexElevations[rIdx] = cur + maxGradient;
+            }
+            if (!isWater[idx] && this.vertexElevations[idx] > this.vertexElevations[rIdx] + maxGradient) {
+              this.vertexElevations[idx] = this.vertexElevations[rIdx] + maxGradient;
+            }
+          }
+          if (vy < h) {
+            const dIdx = (vy + 1) * (w + 1) + vx;
+            if (!isWater[dIdx] && this.vertexElevations[dIdx] > cur + maxGradient) {
+              this.vertexElevations[dIdx] = cur + maxGradient;
+            }
+            if (!isWater[idx] && this.vertexElevations[idx] > this.vertexElevations[dIdx] + maxGradient) {
+              this.vertexElevations[idx] = this.vertexElevations[dIdx] + maxGradient;
+            }
+          }
+        }
+      }
+
+      // Backward pass for symmetric propagation
+      for (let vy = h; vy >= 0; vy--) {
+        for (let vx = w; vx >= 0; vx--) {
+          const idx = vy * (w + 1) + vx;
+          const cur = this.vertexElevations[idx];
+
+          if (vx > 0) {
+            const lIdx = vy * (w + 1) + (vx - 1);
+            if (!isWater[lIdx] && this.vertexElevations[lIdx] > cur + maxGradient) {
+              this.vertexElevations[lIdx] = cur + maxGradient;
+            }
+            if (!isWater[idx] && this.vertexElevations[idx] > this.vertexElevations[lIdx] + maxGradient) {
+              this.vertexElevations[idx] = this.vertexElevations[lIdx] + maxGradient;
+            }
+          }
+          if (vy > 0) {
+            const uIdx = (vy - 1) * (w + 1) + vx;
+            if (!isWater[uIdx] && this.vertexElevations[uIdx] > cur + maxGradient) {
+              this.vertexElevations[uIdx] = cur + maxGradient;
+            }
+            if (!isWater[idx] && this.vertexElevations[idx] > this.vertexElevations[uIdx] + maxGradient) {
+              this.vertexElevations[idx] = this.vertexElevations[uIdx] + maxGradient;
+            }
+          }
+        }
+      }
+    }
+
+    // Ensure all water vertices remain strictly 0
+    for (let vy = 0; vy <= h; vy++) {
+      for (let vx = 0; vx <= w; vx++) {
+        if (isWater[vy * (w + 1) + vx]) {
+          this.vertexElevations[vy * (w + 1) + vx] = 0;
+        }
+      }
+    }
+  }
+
+  /**
+   * Rebuilds vertex elevations when restoring saved tiles.
+   */
+  private computeVertexElevationsFromTiles(): void {
+    const w = this.width;
+    const h = this.height;
+
+    for (let vy = 0; vy <= h; vy++) {
+      for (let vx = 0; vx <= w; vx++) {
+        if (this.isWaterVertex(vx, vy)) {
+          this.setVertexElevation(vx, vy, 0);
+          continue;
+        }
+
+        let sum = 0;
+        let count = 0;
+
+        for (let dy = -1; dy <= 0; dy++) {
+          for (let dx = -1; dx <= 0; dx++) {
+            const tx = vx + dx;
+            const ty = vy + dy;
+            const tile = this.getTile(tx, ty);
+            if (tile && tile.terrain !== 'water') {
+              const elev = tile.elevation !== undefined
+                ? tile.elevation
+                : (tile.terrain === 'rocky' ? 0.85 : tile.terrain === 'forest' ? 0.55 : 0.35);
+              sum += elev * ELEVATION_MAX_HEIGHT_PX;
+              count++;
+            }
+          }
+        }
+
+        const val = count > 0 ? sum / count : 0;
+        this.setVertexElevation(vx, vy, val);
+      }
+    }
+
+    this.enforceMaxGradient();
   }
 
   getTile(x: number, y: number): TileData | undefined {
@@ -345,7 +628,79 @@ export class Grid {
           resourceMax = NODE_RESOURCE_CAPACITY.TREE;
         }
 
-        grid.setTile(x, y, { terrain, feature, resourceRemaining, resourceMax });
+        // Assign base elevation based on biome and elevation noise
+        let baseElevPx = 0;
+        if (terrain === 'water') {
+          baseElevPx = 0;
+        } else if (terrain === 'rocky') {
+          baseElevPx = 54 + Math.max(0, Math.min(1, (nElevation - 0.6) / 0.4)) * 26; // 54px - 80px high peaks
+        } else if (terrain === 'forest') {
+          baseElevPx = 28 + Math.max(0, Math.min(1, (nElevation - 0.3) / 0.5)) * 24; // 28px - 52px forest hills
+        } else {
+          baseElevPx = 14 + Math.max(0, Math.min(1, (nElevation - 0.2) / 0.5)) * 20; // 14px - 34px rolling plains
+        }
+
+        if (distFromCenter < MAP_GENERATION_CONFIG.CENTER_CLEARING_RADIUS + 2) {
+          const blend = Math.max(0, Math.min(1, (distFromCenter - 2) / MAP_GENERATION_CONFIG.CENTER_CLEARING_RADIUS));
+          baseElevPx = 16 * (1 - blend) + baseElevPx * blend;
+        }
+
+        grid.setTile(x, y, {
+          terrain,
+          feature,
+          resourceRemaining,
+          resourceMax,
+          elevation: baseElevPx / ELEVATION_MAX_HEIGHT_PX,
+        });
+      }
+    }
+
+    // Generate continuous vertex elevation mesh (vx: 0..width, vy: 0..height)
+    for (let vy = 0; vy <= height; vy++) {
+      for (let vx = 0; vx <= width; vx++) {
+        if (grid.isWaterVertex(vx, vy)) {
+          grid.setVertexElevation(vx, vy, 0);
+          continue;
+        }
+
+        let sum = 0;
+        let count = 0;
+
+        for (let dy = -1; dy <= 0; dy++) {
+          for (let dx = -1; dx <= 0; dx++) {
+            const t = grid.getTile(vx + dx, vy + dy);
+            if (t && t.terrain !== 'water') {
+              const elev = t.elevation !== undefined ? t.elevation * ELEVATION_MAX_HEIGHT_PX : 20;
+              sum += elev;
+              count++;
+            }
+          }
+        }
+
+        const elevPx = count > 0 ? sum / count : 0;
+        grid.setVertexElevation(vx, vy, elevPx);
+      }
+    }
+
+    // Apply gradient limiter so no slopes exceed ELEVATION_MAX_GRADIENT_PX (water is locked to 0)
+    grid.enforceMaxGradient(ELEVATION_MAX_GRADIENT_PX);
+
+    // Update final computed average tile elevation on TileData
+    for (let y = 0; y < height; y++) {
+      for (let x = 0; x < width; x++) {
+        const currentTile = grid.getTile(x, y);
+        if (!currentTile) continue;
+
+        if (currentTile.terrain === 'water') {
+          currentTile.elevation = 0;
+        } else {
+          const h00 = grid.getVertexElevation(x, y);
+          const h10 = grid.getVertexElevation(x + 1, y);
+          const h01 = grid.getVertexElevation(x, y + 1);
+          const h11 = grid.getVertexElevation(x + 1, y + 1);
+          const avg = (h00 + h10 + h01 + h11) / 4;
+          currentTile.elevation = avg / (ELEVATION_MAX_HEIGHT_PX || 1);
+        }
       }
     }
 
